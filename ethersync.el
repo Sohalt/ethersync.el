@@ -168,7 +168,7 @@ the LSP connection.  That can be done by `ethersync-reconnect'."
 ;;; Message verification helpers
 ;;;
 (eval-and-compile
-  (defvar ethersync--lsp-interface-alist
+  (defvar ethersync--messages-alist
     `(
       ;; Editor to Server
       (Open (:uri))
@@ -261,7 +261,7 @@ compile time if an undeclared Message type is used."))
   (defun ethersync--ensure-type (k) (if (consp k) k (cons k t)))
 
   (defun ethersync--interface (interface-name)
-    (let* ((interface (assoc interface-name ethersync--lsp-interface-alist))
+    (let* ((interface (assoc interface-name ethersync--messages-alist))
            (required (mapcar #'ethersync--ensure-type (car (cdr interface))))
            (optional (mapcar #'ethersync--ensure-type (cadr (cdr interface)))))
       (list :types (append required optional)
@@ -402,137 +402,6 @@ treated as in `ethersync--dbind'."
 (cl-defgeneric ethersync-handle-notification (server method &rest params)
   "Handle SERVER's METHOD notification with PARAMS.")
 
-(cl-defgeneric ethersync-execute-command (_ _ _)
-  (declare (obsolete ethersync-execute "30.1"))
-  (:method
-   (server command arguments)
-   (ethersync--request server :workspace/executeCommand
-                       `(:command ,(format "%s" command) :arguments ,arguments))))
-
-(cl-defgeneric ethersync-execute (server action)
-  "Ask SERVER to execute ACTION.
-ACTION is an LSP object of either `CodeAction' or `Command' type."
-  (:method
-   (server action) "Default implementation."
-   (ethersync--dcase action
-                     (((Command)) (ethersync--request server :workspace/executeCommand action))
-                     (((CodeAction) edit command data)
-                      (if (and (null edit) (null command) data
-                               (ethersync-server-capable :codeActionProvider :resolveProvider))
-                          (ethersync-execute server (ethersync--request server :codeAction/resolve action))
-                        (when edit (ethersync--apply-workspace-edit edit this-command))
-                        (when command (ethersync--request server :workspace/executeCommand command)))))))
-
-(cl-defgeneric ethersync-initialization-options (server)
-  "JSON object to send under `initializationOptions'."
-  (:method (s)
-           (let ((probe (plist-get (ethersync--saved-initargs s) :initializationOptions)))
-             (cond ((functionp probe) (funcall probe s))
-                   (probe)
-                   (t ethersync--{})))))
-
-(cl-defgeneric ethersync-register-capability (server method id &rest params)
-  "Ask SERVER to register capability METHOD marked with ID."
-  (:method
-   (_s method _id &rest _params)
-   (ethersync--warn "Server tried to register unsupported capability `%s'"
-                    method)))
-
-(cl-defgeneric ethersync-unregister-capability (server method id &rest params)
-  "Ask SERVER to register capability METHOD marked with ID."
-  (:method
-   (_s method _id &rest _params)
-   (ethersync--warn "Server tried to unregister unsupported capability `%s'"
-                    method)))
-
-(cl-defgeneric ethersync-client-capabilities (server)
-  "What the Ethersync LSP client supports for SERVER."
-  (:method (s)
-           (list
-            :workspace (list
-                        :applyEdit t
-                        :executeCommand `(:dynamicRegistration :json-false)
-                        :workspaceEdit `(:documentChanges t)
-                        :didChangeWatchedFiles
-                        `(:dynamicRegistration
-                          ,(if (ethersync--trampish-p s) :json-false t))
-                        :symbol `(:dynamicRegistration :json-false)
-                        :configuration t
-                        :workspaceFolders t)
-            :textDocument
-            (list
-             :synchronization (list
-                               :dynamicRegistration :json-false
-                               :willSave t :willSaveWaitUntil t :didSave t)
-             :completion      (list :dynamicRegistration :json-false
-                                    :completionItem
-                                    `(:snippetSupport
-                                      ,(if (and
-                                            (not (ethersync--stay-out-of-p 'yasnippet))
-                                            (ethersync--snippet-expansion-fn))
-                                           t
-                                         :json-false)
-                                      :deprecatedSupport t
-                                      :resolveSupport (:properties
-                                                       ["documentation"
-                                                        "details"
-                                                        "additionalTextEdits"])
-                                      :tagSupport (:valueSet [1]))
-                                    :contextSupport t)
-             :hover              (list :dynamicRegistration :json-false
-                                       :contentFormat (ethersync--accepted-formats))
-             :signatureHelp      (list :dynamicRegistration :json-false
-                                       :signatureInformation
-                                       `(:parameterInformation
-                                         (:labelOffsetSupport t)
-                                         :documentationFormat ,(ethersync--accepted-formats)
-                                         :activeParameterSupport t))
-             :references         `(:dynamicRegistration :json-false)
-             :definition         (list :dynamicRegistration :json-false
-                                       :linkSupport t)
-             :declaration        (list :dynamicRegistration :json-false
-                                       :linkSupport t)
-             :implementation     (list :dynamicRegistration :json-false
-                                       :linkSupport t)
-             :typeDefinition     (list :dynamicRegistration :json-false
-                                       :linkSupport t)
-             :documentSymbol     (list
-                                  :dynamicRegistration :json-false
-                                  :hierarchicalDocumentSymbolSupport t
-                                  :symbolKind `(:valueSet
-                                                [,@(mapcar
-                                                    #'car ethersync--symbol-kind-names)]))
-             :documentHighlight  `(:dynamicRegistration :json-false)
-             :codeAction         (list
-                                  :dynamicRegistration :json-false
-                                  :resolveSupport `(:properties ["edit" "command"])
-                                  :dataSupport t
-                                  :codeActionLiteralSupport
-                                  '(:codeActionKind
-                                    (:valueSet
-                                     ["quickfix"
-                                      "refactor" "refactor.extract"
-                                      "refactor.inline" "refactor.rewrite"
-                                      "source" "source.organizeImports"]))
-                                  :isPreferredSupport t)
-             :formatting         `(:dynamicRegistration :json-false)
-             :rangeFormatting    `(:dynamicRegistration :json-false)
-             :rename             `(:dynamicRegistration :json-false)
-             :inlayHint          `(:dynamicRegistration :json-false)
-             :publishDiagnostics (list :relatedInformation :json-false
-                                       ;; TODO: We can support :codeDescription after
-                                       ;; adding an appropriate UI to
-                                       ;; Flymake.
-                                       :codeDescriptionSupport :json-false
-                                       :tagSupport
-                                       `(:valueSet
-                                         [,@(mapcar
-                                             #'car ethersync--tag-faces)])))
-            :window `(:showDocument (:support t)
-                      :workDoneProgress ,(if ethersync-report-progress t :json-false))
-            :general (list :positionEncodings ["utf-32" "utf-8" "utf-16"])
-            :experimental ethersync--{})))
-
 (cl-defgeneric ethersync-workspace-folders (server)
   "Return workspaceFolders for SERVER."
   (let ((project (ethersync--project server)))
@@ -547,18 +416,6 @@ ACTION is an LSP object of either `CodeAction' or `Command' type."
     :documentation "Short nickname for the associated project."
     :accessor ethersync--project-nickname
     :reader ethersync-project-nickname)
-   (languages
-    :initform nil
-    :documentation "Alist ((MODE . LANGUAGE-ID-STRING)...) of managed languages."
-    :accessor ethersync--languages)
-   (capabilities
-    :initform nil
-    :documentation "JSON object containing server capabilities."
-    :accessor ethersync--capabilities)
-   (server-info
-    :initform nil
-    :documentation "JSON object containing server info."
-    :accessor ethersync--server-info)
    (shutdown-requested
     :initform nil
     :documentation "Flag set when server is shutting down."
@@ -567,9 +424,6 @@ ACTION is an LSP object of either `CodeAction' or `Command' type."
     :initform nil
     :documentation "Project associated with server."
     :accessor ethersync--project)
-   (progress-reporters
-    :initform (make-hash-table :test #'equal) :accessor ethersync--progress-reporters
-    :documentation "Maps LSP progress tokens to progress reporters.")
    (inhibit-autoreconnect
     :initform t
     :documentation "Generalized boolean inhibiting auto-reconnection if true."
@@ -644,33 +498,7 @@ If optional MARKERS, make markers instead."
          (end (ethersync--lsp-position-to-point (plist-get range :end) markers)))
     (cons beg end)))
 
-(defun ethersync-server-capable (&rest feats)
-  "Determine if current server is capable of FEATS."
-  (unless (cl-some (lambda (feat)
-                     (memq feat ethersync-ignored-server-capabilities))
-                   feats)
-    (cl-loop for caps = (ethersync--capabilities (ethersync--current-server-or-lose))
-             then (cadr probe)
-             for (feat . more) on feats
-             for probe = (plist-member caps feat)
-             if (not probe) do (cl-return nil)
-             if (eq (cadr probe) :json-false) do (cl-return nil)
-             if (not (listp (cadr probe))) do (cl-return (if more nil (cadr probe)))
-             finally (cl-return (or (cadr probe) t)))))
-
-(defun ethersync-server-capable-or-lose (&rest feats)
-  "Like `ethersync-server-capable', but maybe error out."
-  (let ((retval (apply #'ethersync-server-capable feats)))
-    (unless retval
-      (ethersync--error "Unsupported or ignored LSP capability `%s'"
-                        (mapconcat #'symbol-name feats " ")))
-    retval))
-
-
 ;;; Process/server management
-(defun ethersync--major-modes (s) "Major modes server S is responsible for."
-       (mapcar #'car (ethersync--languages s)))
-
 (defun ethersync--language-ids (s) "LSP Language ID strings for server S's modes."
        (mapcar #'cdr (ethersync--languages s)))
 
@@ -752,124 +580,6 @@ PRESERVE-BUFFERS as in `ethersync-shutdown', which see."
 (defvar ethersync-command-history nil
   "History of CONTACT arguments to `ethersync'.")
 
-(defun ethersync--lookup-mode (mode)
-  "Lookup `ethersync-server-programs' for MODE.
-Return (LANGUAGES . CONTACT-PROXY).
-
-MANAGED-MODES is a list with MODE as its first element.
-Subsequent elements are other major modes also potentially
-managed by the server that is to manage MODE.
-
-LANGUAGE-IDS is a list of the same length as MANAGED-MODES.  Each
-elem is derived from the corresponding mode name, if not
-specified in `ethersync-server-programs' (which see).
-
-CONTACT-PROXY is the value of the corresponding
-`ethersync-server-programs' entry."
-  (cl-flet ((languages (main-mode-sym specs)
-              (let* ((res
-                      (mapcar (jsonrpc-lambda (sym &key language-id &allow-other-keys)
-                                (cons sym
-                                      (or language-id
-                                          (or (get sym 'ethersync-language-id)
-                                              (replace-regexp-in-string
-                                               "\\(?:-ts\\)?-mode$" ""
-                                               (symbol-name sym))))))
-                              specs))
-                     (head (cl-find main-mode-sym res :key #'car)))
-                (cons head (delq head res)))))
-    (cl-loop
-     for (modes . contact) in ethersync-server-programs
-     for specs = (mapcar #'ethersync--ensure-list
-                         (if (or (symbolp modes) (keywordp (cadr modes)))
-                             (list modes) modes))
-     thereis (cl-some (lambda (spec)
-                        (cl-destructuring-bind (sym &key &allow-other-keys) spec
-                          (and (provided-mode-derived-p mode sym)
-                               (cons (languages sym specs) contact))))
-                      specs))))
-
-(defun ethersync--guess-contact (&optional interactive)
-  "Helper for `ethersync'.
-Return (MANAGED-MODES PROJECT CLASS CONTACT LANG-IDS).  If INTERACTIVE is
-non-nil, maybe prompt user, else error as soon as something can't
-be guessed."
-  (let* ((project (ethersync--current-project))
-         (guessed-mode (if buffer-file-name major-mode))
-         (guessed-mode-name (and guessed-mode (symbol-name guessed-mode)))
-         (main-mode
-          (cond
-           ((and interactive
-                 (or (>= (prefix-numeric-value current-prefix-arg) 16)
-                     (not guessed-mode)))
-            (intern
-             (completing-read
-              "[ethersync] Start a server to manage buffers of what major mode? "
-              (mapcar #'symbol-name (ethersync--all-major-modes)) nil t
-              guessed-mode-name nil guessed-mode-name nil)))
-           ((not guessed-mode)
-            (ethersync--error "Can't guess mode to manage for `%s'" (current-buffer)))
-           (t guessed-mode)))
-         (languages-and-contact (ethersync--lookup-mode main-mode))
-         (managed-modes (mapcar #'car (car languages-and-contact)))
-         (language-ids (mapcar #'cdr (car languages-and-contact)))
-         (guess (cdr languages-and-contact))
-         (guess (if (functionp guess)
-                    (pcase (cdr (func-arity guess))
-                      (1 (funcall guess interactive))
-                      (_ (funcall guess interactive project)))
-                  guess))
-         (class (or (and (consp guess) (symbolp (car guess))
-                         (prog1 (unless current-prefix-arg (car guess))
-                           (setq guess (cdr guess))))
-                    'ethersync-lsp-server))
-         (program (and (listp guess)
-                       (stringp (car guess))
-                       ;; A second element might be the port of a (host, port)
-                       ;; pair, but in that case it is not a string.
-                       (or (null (cdr guess)) (stringp (cadr guess)))
-                       (car guess)))
-         (base-prompt
-          (and interactive
-               "Enter program to execute (or <host>:<port>): "))
-         (full-program-invocation
-          (and program
-               (cl-every #'stringp guess)
-               (combine-and-quote-strings guess)))
-         (prompt
-          (and base-prompt
-               (cond (current-prefix-arg base-prompt)
-                     ((null guess)
-                      (format "[ethersync] Couldn't guess LSP server for `%s'\n%s"
-                              main-mode base-prompt))
-                     ((and program
-                           (not (file-name-absolute-p program))
-                           (not (compat-call executable-find program t)))
-                      (if full-program-invocation
-                          (concat (format "[ethersync] I guess you want to run `%s'"
-                                          full-program-invocation)
-                                  (format ", but I can't find `%s' in PATH!"
-                                          program)
-                                  "\n" base-prompt)
-                        (ethersync--error
-                         (concat "`%s' not found in PATH, but can't form"
-                                 " an interactive prompt for help you fix"
-                                 " this.")
-                         program guess))))))
-         (input (and prompt (read-shell-command prompt
-                                                full-program-invocation
-                                                'ethersync-command-history)))
-         (contact
-          (if input
-              (if (string-match
-                   "^[\s\t]*\\(.*\\):\\([[:digit:]]+\\)[\s\t]*$" input)
-                  ;; <host>:<port> special case (bug#67682)
-                  (list (match-string 1 input)
-                        (string-to-number (match-string 2 input)))
-                (split-string-and-unquote input))
-            guess)))
-    (list managed-modes project class contact language-ids)))
-
 (defvar ethersync-lsp-context nil
   "Dynamically non-nil when searching for projects in LSP context.")
 
@@ -888,19 +598,15 @@ suitable root directory for a given LSP server's purposes."
   (cadr project))
 
 ;;;###autoload
-(defun ethersync (managed-major-modes project class contact language-ids
-                                      &optional _interactive)
-  "Start LSP server for PROJECT's buffers under MANAGED-MAJOR-MODES.
+(defun ethersync (managed-major-modes project class contact)
+  "Start Ethersync for PROJECT's buffers under MANAGED-MAJOR-MODES.
 
 This starts a Language Server Protocol (LSP) server suitable for
 the buffers of PROJECT whose `major-mode' is among
 MANAGED-MAJOR-MODES.  CLASS is the class of the LSP server to
 start and CONTACT specifies how to connect to the server.
 
-Interactively, the command attempts to guess MANAGED-MAJOR-MODES,
-CLASS, CONTACT, and LANGUAGE-IDS from `ethersync-server-programs',
-according to the current buffer's `major-mode'.  PROJECT is
-guessed from `project-find-functions'.  The search for active
+PROJECT is guessed from `project-find-functions'.  The search for active
 projects in this context binds `ethersync-lsp-context' (which see).
 
 If it can't guess, it prompts the user for the mode and the
@@ -922,23 +628,16 @@ CLASS is a subclass of `ethersync-lsp-server'.
 
 CONTACT specifies how to contact the server.  It is a
 keyword-value plist used to initialize CLASS or a plain list as
-described in `ethersync-server-programs', which see.
-
-LANGUAGE-IDS is a list of language ID string to send to the
-server for each element in MANAGED-MAJOR-MODES.
-
-INTERACTIVE is ignored and provided for backward compatibility."
+described in `ethersync-server-programs', which see."
   (interactive
    (let ((current-server (ethersync-current-server)))
      (unless (or (null current-server)
                  (y-or-n-p "\
 [ethersync] Shut down current connection before attempting new one?"))
        (user-error "[ethersync] Connection attempt aborted by user."))
-     (prog1 (append (ethersync--guess-contact t) '(t))
-       (when current-server (ignore-errors (ethersync-shutdown current-server))))))
+     (when current-server (ignore-errors (ethersync-shutdown current-server)))))
   (ethersync--connect (ethersync--ensure-list managed-major-modes)
-                      project class contact
-                      (ethersync--ensure-list language-ids)))
+                      project class contact))
 
 (defun ethersync-reconnect (server &optional interactive)
   "Reconnect to SERVER.
@@ -946,11 +645,9 @@ INTERACTIVE is t if called interactively."
   (interactive (list (ethersync--current-server-or-lose) t))
   (when (jsonrpc-running-p server)
     (ignore-errors (ethersync-shutdown server interactive nil 'preserve-buffers)))
-  (ethersync--connect (ethersync--major-modes server)
-                      (ethersync--project server)
+  (ethersync--connect (ethersync--project server)
                       (eieio-object-class-name server)
-                      (ethersync--saved-initargs server)
-                      (ethersync--language-ids server))
+                      (ethersync--saved-initargs server))
   (ethersync--message "Reconnected!"))
 
 (defvar ethersync--managed-mode) ; forward decl
@@ -974,11 +671,11 @@ needed."
         ((maybe-connect
            ()
            (ethersync--when-live-buffer buffer
-                                        (remove-hook 'post-command-hook #'maybe-connect t)
-                                        (unless ethersync--managed-mode
-                                          (condition-case-unless-debug oops
-                                              (apply #'ethersync--connect (ethersync--guess-contact))
-                                            (error (ethersync--warn (error-message-string oops))))))))
+             (remove-hook 'post-command-hook #'maybe-connect t)
+             (unless ethersync--managed-mode
+               (condition-case-unless-debug oops
+                   (apply #'ethersync--connect (ethersync--guess-contact))
+                 (error (ethersync--warn (error-message-string oops))))))))
       (when buffer-file-name
         (add-hook 'post-command-hook #'maybe-connect 'append t)))))
 
@@ -1145,46 +842,46 @@ This docstring appeases checkdoc, that's all."
                             :workspaceFolders (ethersync-workspace-folders server))
                       :success-fn
                       (ethersync--lambda ((InitializeResult) capabilities serverInfo)
-                                         (unless canceled
-                                           (push server
-                                                 (gethash project ethersync--servers-by-project))
-                                           (setf (ethersync--capabilities server) capabilities)
-                                           (setf (ethersync--server-info server) serverInfo)
-                                           (jsonrpc-notify server :initialized ethersync--{})
-                                           (dolist (buffer (buffer-list))
-                                             (with-current-buffer buffer
-                                               ;; No need to pass SERVER as an argument: it has
-                                               ;; been registered in `ethersync--servers-by-project',
-                                               ;; so that it can be found (and cached) from
-                                               ;; `ethersync--maybe-activate-editing-mode' in any
-                                               ;; managed buffer.
-                                               (ethersync--maybe-activate-editing-mode)))
-                                           (setf (ethersync--inhibit-autoreconnect server)
-                                                 (cond
-                                                  ((booleanp ethersync-autoreconnect)
-                                                   (not ethersync-autoreconnect))
-                                                  ((cl-plusp ethersync-autoreconnect)
-                                                   (run-with-timer
-                                                    ethersync-autoreconnect nil
-                                                    (lambda ()
-                                                      (setf (ethersync--inhibit-autoreconnect server)
-                                                            (null ethersync-autoreconnect)))))))
-                                           (run-hook-with-args 'ethersync-connect-hook server)
-                                           (ethersync--message
-                                            "Connected! Server `%s' now managing `%s' buffers \
+                        (unless canceled
+                          (push server
+                                (gethash project ethersync--servers-by-project))
+                          (setf (ethersync--capabilities server) capabilities)
+                          (setf (ethersync--server-info server) serverInfo)
+                          (jsonrpc-notify server :initialized ethersync--{})
+                          (dolist (buffer (buffer-list))
+                            (with-current-buffer buffer
+                              ;; No need to pass SERVER as an argument: it has
+                              ;; been registered in `ethersync--servers-by-project',
+                              ;; so that it can be found (and cached) from
+                              ;; `ethersync--maybe-activate-editing-mode' in any
+                              ;; managed buffer.
+                              (ethersync--maybe-activate-editing-mode)))
+                          (setf (ethersync--inhibit-autoreconnect server)
+                                (cond
+                                 ((booleanp ethersync-autoreconnect)
+                                  (not ethersync-autoreconnect))
+                                 ((cl-plusp ethersync-autoreconnect)
+                                  (run-with-timer
+                                   ethersync-autoreconnect nil
+                                   (lambda ()
+                                     (setf (ethersync--inhibit-autoreconnect server)
+                                           (null ethersync-autoreconnect)))))))
+                          (run-hook-with-args 'ethersync-connect-hook server)
+                          (ethersync--message
+                           "Connected! Server `%s' now managing `%s' buffers \
 in project `%s'."
-                                            (or (plist-get serverInfo :name)
-                                                (jsonrpc-name server))
-                                            managed-modes
-                                            (ethersync-project-nickname server))
-                                           (when tag (throw tag t))))
+                           (or (plist-get serverInfo :name)
+                               (jsonrpc-name server))
+                           managed-modes
+                           (ethersync-project-nickname server))
+                          (when tag (throw tag t))))
                       :timeout ethersync-connect-timeout
                       :error-fn (ethersync--lambda ((ResponseError) code message)
-                                                   (unless canceled
-                                                     (jsonrpc-shutdown server)
-                                                     (let ((msg (format "%s: %s" code message)))
-                                                       (if tag (throw tag `(error . ,msg))
-                                                         (ethersync--error msg)))))
+                                  (unless canceled
+                                    (jsonrpc-shutdown server)
+                                    (let ((msg (format "%s: %s" code message)))
+                                      (if tag (throw tag `(error . ,msg))
+                                        (ethersync--error msg)))))
                       :timeout-fn (lambda ()
                                     (unless canceled
                                       (jsonrpc-shutdown server)
@@ -1506,14 +1203,8 @@ Use `ethersync-managed-p' to determine if current buffer is managed.")
   :init-value nil :lighter nil :keymap ethersync-mode-map :interactive nil
   (cond
    (ethersync--managed-mode
-    (pcase (plist-get (ethersync--capabilities (ethersync-current-server))
-                      :positionEncoding)
-      ("utf-32"
-       (ethersync--setq-saving ethersync-current-linepos-function #'ethersync-utf-32-linepos)
-       (ethersync--setq-saving ethersync-move-to-linepos-function #'ethersync-move-to-utf-32-linepos))
-      ("utf-8"
-       (ethersync--setq-saving ethersync-current-linepos-function #'ethersync-utf-8-linepos)
-       (ethersync--setq-saving ethersync-move-to-linepos-function #'ethersync-move-to-utf-8-linepos)))
+    (ethersync--setq-saving ethersync-current-linepos-function #'ethersync-utf-8-linepos)
+    (ethersync--setq-saving ethersync-move-to-linepos-function #'ethersync-move-to-utf-8-linepos)
     (unless ethersync--track-changes
       (setq ethersync--track-changes
             (track-changes-register
@@ -1599,11 +1290,7 @@ Use `ethersync-managed-p' to determine if current buffer is managed.")
                  (or
                   (cl-find-if #'ethersync--languageId
                               (gethash (ethersync--current-project)
-                                       ethersync--servers-by-project))
-                  (and ethersync-extend-to-xref
-                       buffer-file-name
-                       (gethash (expand-file-name buffer-file-name)
-                                ethersync--servers-by-xrefed-file)))))))
+                                       ethersync--servers-by-project)))))))
 
 (defun ethersync--current-server-or-lose ()
   "Return current logical Ethersync server connection or error."
@@ -1674,63 +1361,13 @@ If it is activated, also signal textDocument/didOpen."
            (package-delete existing t))
          (package-install (cadr (assoc 'ethersync package-archive-contents)))))
 
-(easy-menu-define ethersync-menu nil "Ethersync"
-  `("Ethersync"
-    ;; Commands for getting information and customization.
-    ["Customize Ethersync" (lambda () (interactive) (customize-group "ethersync"))]
-    "--"
-    ;; xref like commands.
-    ["Find definitions" xref-find-definitions
-     :help "Find definitions of identifier at point"
-     :active (ethersync-server-capable :definitionProvider)]
-    ["Find references" xref-find-references
-     :help "Find references to identifier at point"
-     :active (ethersync-server-capable :referencesProvider)]
-    ["Find symbols in workspace (apropos)" xref-find-apropos
-     :help "Find symbols matching a query"
-     :active (ethersync-server-capable :workspaceSymbolProvider)]
-    ["Find declaration" ethersync-find-declaration
-     :help "Find declaration for identifier at point"
-     :active (ethersync-server-capable :declarationProvider)]
-    ["Find implementation" ethersync-find-implementation
-     :help "Find implementation for identifier at point"
-     :active (ethersync-server-capable :implementationProvider)]
-    ["Find type definition" ethersync-find-typeDefinition
-     :help "Find type definition for identifier at point"
-     :active (ethersync-server-capable :typeDefinitionProvider)]
-    "--"
-    ;; LSP-related commands (mostly Ethersync's own commands).
-    ["Rename symbol" ethersync-rename
-     :active (ethersync-server-capable :renameProvider)]
-    ["Format buffer" ethersync-format-buffer
-     :active (ethersync-server-capable :documentFormattingProvider)]
-    ["Format active region" ethersync-format
-     :active (and (region-active-p)
-                  (ethersync-server-capable :documentRangeFormattingProvider))]
-    ["Show Flymake diagnostics for buffer" flymake-show-buffer-diagnostics]
-    ["Show Flymake diagnostics for project" flymake-show-project-diagnostics]
-    ["Show Eldoc documentation at point" eldoc-doc-buffer]
-    "--"
-    ["All possible code actions" ethersync-code-actions
-     :active (ethersync-server-capable :codeActionProvider)]
-    ["Organize imports" ethersync-code-action-organize-imports
-     :visible (ethersync-server-capable :codeActionProvider)]
-    ["Extract" ethersync-code-action-extract
-     :visible (ethersync-server-capable :codeActionProvider)]
-    ["Inline" ethersync-code-action-inline
-     :visible (ethersync-server-capable :codeActionProvider)]
-    ["Rewrite" ethersync-code-action-rewrite
-     :visible (ethersync-server-capable :codeActionProvider)]
-    ["Quickfix" ethersync-code-action-quickfix
-     :visible (ethersync-server-capable :codeActionProvider)]))
-
-(easy-menu-define ethersync-server-menu nil "Monitor server communication"
+(easy-menu-define ethersync-server-menu nil "Monitor server communication."
   '("Debugging the server communication"
     ["Reconnect to server" ethersync-reconnect]
     ["Quit server" ethersync-shutdown]
     "--"
-    ["LSP events buffer" ethersync-events-buffer]
-    ["Server stderr buffer" ethersync-stderr-buffer]
+    ["Ethersync events buffer" ethersync-events-buffer]
+    ["Ethersync stderr buffer" ethersync-stderr-buffer]
     ["Customize event buffer size"
      (lambda ()
        (interactive)
@@ -1754,24 +1391,20 @@ Uses THING, FACE, DEFS and PREPEND."
   "Compose Ethersync's mode-line."
   (let* ((server (ethersync-current-server))
          (nick (and server (ethersync-project-nickname server)))
-         (pending (and server (jsonrpc-continuation-count server)))
          (last-error (and server (jsonrpc-last-error server))))
     (append
      `(,(propertize
          ethersync-menu-string
          'face 'ethersync-mode-line
          'mouse-face 'mode-line-highlight
-         'help-echo "Ethersync: Emacs LSP client\nmouse-1: Display minor mode menu"
-         'keymap (let ((map (make-sparse-keymap)))
-                   (define-key map [mode-line down-mouse-1] ethersync-menu)
-                   map)))
+         'help-echo "Ethersync"))
      (when nick
        `(":"
          ,(propertize
            nick
            'face 'ethersync-mode-line
            'mouse-face 'mode-line-highlight
-           'help-echo (format "Project '%s'\nmouse-1: LSP server control menu" nick)
+           'help-echo (format "Project '%s'\nmouse-1: Ethersync control menu" nick)
            'keymap (let ((map (make-sparse-keymap)))
                      (define-key map [mode-line down-mouse-1] ethersync-server-menu)
                      map))
@@ -1780,50 +1413,11 @@ Uses THING, FACE, DEFS and PREPEND."
                      "error" 'compilation-mode-line-fail
                      '((mouse-3 ethersync-clear-status  "Clear this status"))
                      (format "An error occurred: %s\n" (plist-get last-error
-                                                                  :message)))))
-         ,@(when (cl-plusp pending)
-             `("/" ,(ethersync--mode-line-props
-                     (format "%d" pending) 'warning
-                     '((mouse-3 ethersync-forget-pending-continuations
-                        "Forget pending continuations"))
-                     "Number of outgoing, \
-still unanswered LSP requests to the server\n")))
-         ,@(cl-loop for pr hash-values of (ethersync--progress-reporters server)
-                    when (eq (car pr)  'ethersync--mode-line-reporter)
-                    append `("/" ,(ethersync--mode-line-props
-                                   (format "%s%%%%" (or (nth 4 pr) "?"))
-                                   'ethersync-mode-line
-                                   nil
-                                   (format "(%s) %s %s" (nth 1 pr)
-                                           (nth 2 pr) (nth 3 pr))))))))))
+                                                                  :message))))))))))
 
 (add-to-list 'mode-line-misc-info
              `(ethersync--managed-mode (" [" ethersync--mode-line-format "] ")))
 
-
-;;; Flymake customization
-;;;
-(put 'ethersync-note 'flymake-category 'flymake-note)
-(put 'ethersync-warning 'flymake-category 'flymake-warning)
-(put 'ethersync-error 'flymake-category 'flymake-error)
-
-(defalias 'ethersync--make-diag #'flymake-make-diagnostic)
-(defalias 'ethersync--diag-data #'flymake-diagnostic-data)
-
-(defvar ethersync-diagnostics-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map [mouse-2] #'ethersync-code-actions-at-mouse)
-    map)
-  "Keymap active in Ethersync-backed Flymake diagnostic overlays.")
-
-(cl-loop for i from 1
-         for type in '(ethersync-note ethersync-warning ethersync-error)
-         do (put type 'flymake-overlay-control
-                 `((mouse-face . highlight)
-                   (priority . ,(+ 50 i))
-                   (keymap . ,ethersync-diagnostics-map))))
-
-
 ;;; Protocol implementation (Requests, notifications, etc)
 ;;;
 (cl-defmethod ethersync-handle-notification
@@ -1893,16 +1487,16 @@ still unanswered LSP requests to the server\n")))
                   (force-mode-line-update t))
                  (pr (ethersync--reporter-update pr pcnt msg)))))
       (ethersync--dbind ((WorkDoneProgress) kind title percentage message) value
-                        (pcase kind
-                          ("begin"
-                           (upd percentage (fmt title message)
-                                (puthash token (mkpr title)
-                                         (ethersync--progress-reporters server))))
-                          ("report" (upd percentage message))
-                          ("end" (upd (or percentage 100) message)
-                           (run-at-time 2 nil
-                                        (lambda ()
-                                          (remhash token (ethersync--progress-reporters server))))))))))
+        (pcase kind
+          ("begin"
+           (upd percentage (fmt title message)
+                (puthash token (mkpr title)
+                         (ethersync--progress-reporters server))))
+          ("report" (upd percentage message))
+          ("end" (upd (or percentage 100) message)
+           (run-at-time 2 nil
+                        (lambda ()
+                          (remhash token (ethersync--progress-reporters server))))))))))
 
 (defvar-local ethersync--TextDocumentIdentifier-cache nil
   "LSP TextDocumentIdentifier-related cached info for current buffer.
@@ -1938,36 +1532,36 @@ expensive cached value of `file-truename'.")
                  (assoc-delete-all path flymake-list-only-diagnostics))
            for diag-spec across diagnostics
            collect (ethersync--dbind ((Diagnostic) range code message severity source tags)
-                                     diag-spec
-                                     (setq message (mess source code message))
-                                     (pcase-let
-                                         ((`(,beg . ,end) (ethersync-range-region range)))
-                                       ;; Fallback to `flymake-diag-region' if server
-                                       ;; botched the range
-                                       (when (= beg end)
-                                         (if-let* ((st (plist-get range :start))
-                                                   (diag-region
-                                                    (flymake-diag-region
-                                                     (current-buffer) (1+ (plist-get st :line))
-                                                     (plist-get st :character))))
-                                             (setq beg (car diag-region) end (cdr diag-region))
-                                           (ethersync--widening
-                                            (goto-char (point-min))
-                                            (setq beg
-                                                  (ethersync--bol
-                                                   (1+ (plist-get (plist-get range :start) :line))))
-                                            (setq end
-                                                  (line-end-position
-                                                   (1+ (plist-get (plist-get range :end) :line)))))))
-                                       (ethersync--make-diag
-                                        (current-buffer) beg end
-                                        (ethersync--diag-type severity)
-                                        message `((ethersync-lsp-diag . ,diag-spec))
-                                        (when-let ((faces
-                                                    (cl-loop for tag across tags
-                                                             when (alist-get tag ethersync--tag-faces)
-                                                             collect it)))
-                                          `((face . ,faces))))))
+                       diag-spec
+                     (setq message (mess source code message))
+                     (pcase-let
+                         ((`(,beg . ,end) (ethersync-range-region range)))
+                       ;; Fallback to `flymake-diag-region' if server
+                       ;; botched the range
+                       (when (= beg end)
+                         (if-let* ((st (plist-get range :start))
+                                   (diag-region
+                                    (flymake-diag-region
+                                     (current-buffer) (1+ (plist-get st :line))
+                                     (plist-get st :character))))
+                             (setq beg (car diag-region) end (cdr diag-region))
+                           (ethersync--widening
+                            (goto-char (point-min))
+                            (setq beg
+                                  (ethersync--bol
+                                   (1+ (plist-get (plist-get range :start) :line))))
+                            (setq end
+                                  (line-end-position
+                                   (1+ (plist-get (plist-get range :end) :line)))))))
+                       (ethersync--make-diag
+                        (current-buffer) beg end
+                        (ethersync--diag-type severity)
+                        message `((ethersync-lsp-diag . ,diag-spec))
+                        (when-let ((faces
+                                    (cl-loop for tag across tags
+                                             when (alist-get tag ethersync--tag-faces)
+                                             collect it)))
+                          `((face . ,faces))))))
            into diags
            finally (cond ((and
                            ;; only add to current report if Flymake
@@ -1980,12 +1574,12 @@ expensive cached value of `file-truename'.")
       (cl-loop
        for diag-spec across diagnostics
        collect (ethersync--dbind ((Diagnostic) code range message severity source) diag-spec
-                                 (setq message (mess source code message))
-                                 (let* ((start (plist-get range :start))
-                                        (line (1+ (plist-get start :line)))
-                                        (char (1+ (plist-get start :character))))
-                                   (ethersync--make-diag
-                                    path (cons line char) nil (ethersync--diag-type severity) message)))
+                 (setq message (mess source code message))
+                 (let* ((start (plist-get range :start))
+                        (line (1+ (plist-get start :line)))
+                        (char (1+ (plist-get start :character))))
+                   (ethersync--make-diag
+                    path (cons line char) nil (ethersync--diag-type severity) message)))
        into diags
        finally
        (setq flymake-list-only-diagnostics
@@ -1998,10 +1592,10 @@ THINGS are either registrations or unregisterations (sic)."
   (cl-loop
    for thing in (cl-coerce things 'list)
    do (ethersync--dbind ((Registration) id method registerOptions) thing
-                        (apply (cl-ecase how
-                                 (register 'ethersync-register-capability)
-                                 (unregister 'ethersync-unregister-capability))
-                               server (intern method) id registerOptions))))
+        (apply (cl-ecase how
+                 (register 'ethersync-register-capability)
+                 (unregister 'ethersync-unregister-capability))
+               server (intern method) id registerOptions))))
 
 (cl-defmethod ethersync-handle-request
   (server (_method (eql client/registerCapability)) &key registrations)
@@ -2183,17 +1777,17 @@ buffer."
          ethersync-send-changes-idle-time nil
          (lambda (buf)
            (ethersync--when-live-buffer buf
-                                        (when ethersync--managed-mode
-                                          (if (track-changes-inconsistent-state-p)
-                                              ;; Not a good time (e.g. in the middle of Quail thingy,
-                                              ;; bug#70541): reschedule for the next idle period.
-                                              (ethersync--add-one-shot-hook
-                                               'post-command-hook
-                                               (lambda ()
-                                                 (ethersync--when-live-buffer buf
-                                                                              (ethersync--track-changes-signal id))))
-                                            (run-hooks 'ethersync--document-changed-hook)
-                                            (setq ethersync--change-idle-timer nil)))))
+             (when ethersync--managed-mode
+               (if (track-changes-inconsistent-state-p)
+                   ;; Not a good time (e.g. in the middle of Quail thingy,
+                   ;; bug#70541): reschedule for the next idle period.
+                   (ethersync--add-one-shot-hook
+                    'post-command-hook
+                    (lambda ()
+                      (ethersync--when-live-buffer buf
+                        (ethersync--track-changes-signal id))))
+                 (run-hooks 'ethersync--document-changed-hook)
+                 (setq ethersync--change-idle-timer nil)))))
          (current-buffer))))
 
 (defvar-local ethersync-workspace-configuration ()
@@ -2283,17 +1877,17 @@ When called interactively, use the currently active server"
   (apply #'vector
          (mapcar
           (ethersync--lambda ((ConfigurationItem) scopeUri section)
-                             (cl-loop
-                              with scope-uri-path = (and scopeUri (ethersync-uri-to-path scopeUri))
-                              for (wsection o)
-                              on (ethersync--workspace-configuration-plist server scope-uri-path)
-                              by #'cddr
-                              when (string=
-                                    (if (keywordp wsection)
-                                        (substring (symbol-name wsection) 1)
-                                      wsection)
-                                    section)
-                              return o))
+            (cl-loop
+             with scope-uri-path = (and scopeUri (ethersync-uri-to-path scopeUri))
+             for (wsection o)
+             on (ethersync--workspace-configuration-plist server scope-uri-path)
+             by #'cddr
+             when (string=
+                   (if (keywordp wsection)
+                       (substring (symbol-name wsection) 1)
+                     wsection)
+                   section)
+             return o))
           items)))
 
 (defun ethersync--signal-textDocument/didChange ()
@@ -2362,271 +1956,6 @@ When called interactively, use the currently active server"
       :text (buffer-substring-no-properties (point-min) (point-max))
       :textDocument (ethersync--TextDocumentIdentifier)))))
 
-(defun ethersync-flymake-backend (report-fn &rest _more)
-  "A Flymake backend for Ethersync.
-Calls REPORT-FN (or arranges for it to be called) when the server
-publishes diagnostics.  Between calls to this function, REPORT-FN
-may be called multiple times (respecting the protocol of
-`flymake-diagnostic-functions')."
-  (cond (ethersync--managed-mode
-         (setq ethersync--current-flymake-report-fn report-fn)
-         (ethersync--report-to-flymake ethersync--diagnostics))
-        (t
-         (funcall report-fn nil))))
-
-(defun ethersync--report-to-flymake (diags)
-  "Internal helper for `ethersync-flymake-backend'."
-  (save-restriction
-    (widen)
-    (funcall ethersync--current-flymake-report-fn diags
-             ;; If the buffer hasn't changed since last
-             ;; call to the report function, flymake won't
-             ;; delete old diagnostics.  Using :region
-             ;; keyword forces flymake to delete
-             ;; them (github#159).
-             :region (cons (point-min) (point-max))))
-  (setq ethersync--diagnostics diags))
-
-(defun ethersync-xref-backend () "Ethersync xref backend." 'ethersync)
-
-(defvar ethersync--temp-location-buffers (make-hash-table :test #'equal)
-  "Helper variable for `ethersync--collecting-xrefs'.")
-
-(defvar ethersync-xref-lessp-function #'ignore
-  "Compare two `xref-item' objects for sorting.")
-
-(cl-defmacro ethersync--collecting-xrefs ((collector) &rest body)
-  "Sort and handle xrefs collected with COLLECTOR in BODY."
-  (declare (indent 1) (debug (sexp &rest form)))
-  (let ((collected (cl-gensym "collected")))
-    `(unwind-protect
-         (let (,collected)
-           (cl-flet ((,collector (xref) (push xref ,collected)))
-             ,@body)
-           (setq ,collected (nreverse ,collected))
-           (sort ,collected ethersync-xref-lessp-function))
-       (maphash (lambda (_uri buf) (kill-buffer buf)) ethersync--temp-location-buffers)
-       (clrhash ethersync--temp-location-buffers))))
-
-(defun ethersync--xref-make-match (name uri range)
-  "Like `xref-make-match' but with LSP's NAME, URI and RANGE.
-Try to visit the target file for a richer summary line."
-  (pcase-let*
-      ((file (ethersync-uri-to-path uri))
-       (visiting (or (find-buffer-visiting file)
-                     (gethash uri ethersync--temp-location-buffers)))
-       (collect (lambda ()
-                  (ethersync--widening
-                   (pcase-let* ((`(,beg . ,end) (ethersync-range-region range))
-                                (bol (progn (goto-char beg) (ethersync--bol)))
-                                (substring (buffer-substring bol (line-end-position)))
-                                (hi-beg (- beg bol))
-                                (hi-end (- (min (line-end-position) end) bol)))
-                     (add-face-text-property hi-beg hi-end 'xref-match
-                                             t substring)
-                     (list substring (line-number-at-pos (point) t)
-                           (ethersync-utf-32-linepos) (- end beg))))))
-       (`(,summary ,line ,column ,length)
-        (cond
-         (visiting (with-current-buffer visiting (funcall collect)))
-         ((file-readable-p file) (with-current-buffer
-                                     (puthash uri (generate-new-buffer " *temp*")
-                                              ethersync--temp-location-buffers)
-                                   (insert-file-contents file)
-                                   (funcall collect)))
-         (t ;; fall back to the "dumb strategy"
-          (let* ((start (cl-getf range :start))
-                 (line (1+ (cl-getf start :line)))
-                 (start-pos (cl-getf start :character))
-                 (end-pos (cl-getf (cl-getf range :end) :character)))
-            (list name line start-pos (- end-pos start-pos)))))))
-    (setf (gethash (expand-file-name file) ethersync--servers-by-xrefed-file)
-          (ethersync--current-server-or-lose))
-    (xref-make-match summary (xref-make-file-location file line column) length)))
-
-(defun ethersync--workspace-symbols (pat &optional buffer)
-  "Ask for :workspace/symbol on PAT, return list of formatted strings.
-If BUFFER, switch to it before."
-  (with-current-buffer (or buffer (current-buffer))
-    (ethersync-server-capable-or-lose :workspaceSymbolProvider)
-    (mapcar
-     (lambda (wss)
-       (ethersync--dbind ((WorkspaceSymbol) name containerName kind) wss
-                         (propertize
-                          (format "%s%s %s"
-                                  (if (zerop (length containerName)) ""
-                                    (concat (propertize containerName 'face 'shadow) " "))
-                                  name
-                                  (propertize (alist-get kind ethersync--symbol-kind-names "Unknown")
-                                              'face 'shadow))
-                          'ethersync--lsp-workspaceSymbol wss)))
-     (ethersync--request (ethersync--current-server-or-lose) :workspace/symbol
-                         `(:query ,pat)))))
-
-(cl-defmethod xref-backend-identifier-completion-table ((_backend (eql ethersync)))
-  "Yet another tricky connection between LSP and Elisp completion semantics."
-  (let ((buf (current-buffer)) (cache ethersync--workspace-symbols-cache))
-    (cl-labels ((refresh (pat) (ethersync--workspace-symbols pat buf))
-                (lookup-1 (pat) ;; check cache, else refresh
-                  (let ((probe (gethash pat cache :missing)))
-                    (if (eq probe :missing) (puthash pat (refresh pat) cache)
-                      probe)))
-                (lookup (pat _point)
-                  (let ((res (lookup-1 pat))
-                        (def (and (string= pat "") (gethash :default cache))))
-                    (append def res nil)))
-                (score (c)
-                  (cl-getf (get-text-property
-                            0 'ethersync--lsp-workspaceSymbol c)
-                           :score 0)))
-      (external-completion-table
-       'ethersync-indirection-joy
-       #'lookup
-       `((cycle-sort-function
-          . ,(lambda (completions)
-               (cl-sort completions #'> :key #'score))))))))
-
-(defun ethersync--recover-workspace-symbol-meta (string)
-  "Search `ethersync--workspace-symbols-cache' for rich entry of STRING."
-  (catch 'found
-    (maphash (lambda (_k v)
-               (while (consp v)
-                 ;; Like mess? Ask minibuffer.el about improper lists.
-                 (when (equal (car v) string) (throw 'found (car v)))
-                 (setq v (cdr v))))
-             ethersync--workspace-symbols-cache)))
-
-(cl-defmethod xref-backend-identifier-at-point ((_backend (eql ethersync)))
-  (let ((attempt
-         (and (xref--prompt-p this-command)
-              (puthash :default
-                       (ignore-errors
-                         (ethersync--workspace-symbols (symbol-name (symbol-at-point))))
-                       ethersync--workspace-symbols-cache))))
-    (if attempt (car attempt) "LSP identifier at point")))
-
-(defvar ethersync--lsp-xref-refs nil
-  "`xref' objects for overriding `xref-backend-references''s.")
-
-(cl-defun ethersync--lsp-xrefs-for-method (method &key extra-params capability)
-  "Make `xref''s for METHOD, EXTRA-PARAMS, check CAPABILITY."
-  (ethersync-server-capable-or-lose
-   (or capability
-       (intern
-        (format ":%sProvider"
-                (cadr (split-string (symbol-name method)
-                                    "/"))))))
-  (let ((response
-         (ethersync--request
-          (ethersync--current-server-or-lose)
-          method (append (ethersync--TextDocumentPositionParams) extra-params))))
-    (ethersync--collecting-xrefs (collect)
-                                 (mapc
-                                  (lambda (loc-or-loc-link)
-                                    (let ((sym-name (symbol-name (symbol-at-point))))
-                                      (ethersync--dcase loc-or-loc-link
-                                                        (((LocationLink) targetUri targetSelectionRange)
-                                                         (collect (ethersync--xref-make-match sym-name
-                                                                                              targetUri targetSelectionRange)))
-                                                        (((Location) uri range)
-                                                         (collect (ethersync--xref-make-match sym-name
-                                                                                              uri range))))))
-                                  (if (vectorp response) response (and response (list response)))))))
-
-(cl-defun ethersync--lsp-xref-helper (method &key extra-params capability)
-  "Helper for `ethersync-find-declaration' & friends."
-  (let ((ethersync--lsp-xref-refs (ethersync--lsp-xrefs-for-method
-                                   method
-                                   :extra-params extra-params
-                                   :capability capability)))
-    (if ethersync--lsp-xref-refs
-        (xref-find-references "LSP identifier at point.")
-      (ethersync--message "%s returned no references" method))))
-
-(defun ethersync-find-declaration ()
-  "Find declaration for SYM, the identifier at point."
-  (interactive)
-  (ethersync--lsp-xref-helper :textDocument/declaration))
-
-(defun ethersync-find-implementation ()
-  "Find implementation for SYM, the identifier at point."
-  (interactive)
-  (ethersync--lsp-xref-helper :textDocument/implementation))
-
-(defun ethersync-find-typeDefinition ()
-  "Find type definition for SYM, the identifier at point."
-  (interactive)
-  (ethersync--lsp-xref-helper :textDocument/typeDefinition))
-
-(cl-defmethod xref-backend-definitions ((_backend (eql ethersync)) id)
-  (let ((probe (ethersync--recover-workspace-symbol-meta id)))
-    (if probe
-        (ethersync--dbind ((WorkspaceSymbol) name location)
-                          (get-text-property 0 'ethersync--lsp-workspaceSymbol probe)
-                          (ethersync--dbind ((Location) uri range) location
-                                            (list (ethersync--xref-make-match name uri range))))
-      (ethersync--lsp-xrefs-for-method :textDocument/definition))))
-
-(cl-defmethod xref-backend-references ((_backend (eql ethersync)) _identifier)
-  (or
-   ethersync--lsp-xref-refs
-   (ethersync--lsp-xrefs-for-method
-    :textDocument/references :extra-params `(:context (:includeDeclaration t)))))
-
-(cl-defmethod xref-backend-apropos ((_backend (eql ethersync)) pattern)
-  (when (ethersync-server-capable :workspaceSymbolProvider)
-    (ethersync--collecting-xrefs (collect)
-                                 (mapc
-                                  (ethersync--lambda ((SymbolInformation) name location)
-                                                     (ethersync--dbind ((Location) uri range) location
-                                                                       (collect (ethersync--xref-make-match name uri range))))
-                                  (ethersync--request (ethersync--current-server-or-lose)
-                                                      :workspace/symbol
-                                                      `(:query ,pattern))))))
-
-(defun ethersync-format-buffer ()
-  "Format contents of current buffer."
-  (interactive)
-  (ethersync-format nil nil))
-
-(defun ethersync-format (&optional beg end on-type-format)
-  "Format region BEG END.
-If either BEG or END is nil, format entire buffer.
-Interactively, format active region, or entire buffer if region
-is not active.
-
-If non-nil, ON-TYPE-FORMAT is a character just inserted at BEG
-for which LSP on-type-formatting should be requested."
-  (interactive (and (region-active-p) (list (region-beginning) (region-end))))
-  (pcase-let ((`(,method ,cap ,args)
-               (cond
-                ((and beg on-type-format)
-                 `(:textDocument/onTypeFormatting
-                   :documentOnTypeFormattingProvider
-                   ,`(:position ,(ethersync--pos-to-lsp-position beg)
-                      :ch ,(string on-type-format))))
-                ((and beg end)
-                 `(:textDocument/rangeFormatting
-                   :documentRangeFormattingProvider
-                   (:range ,(list :start (ethersync--pos-to-lsp-position beg)
-                                  :end (ethersync--pos-to-lsp-position end)))))
-                (t
-                 '(:textDocument/formatting :documentFormattingProvider nil)))))
-    (ethersync-server-capable-or-lose cap)
-    (ethersync--apply-text-edits
-     (ethersync--request
-      (ethersync--current-server-or-lose)
-      method
-      (cl-list*
-       :textDocument (ethersync--TextDocumentIdentifier)
-       :options (list :tabSize tab-width
-                      :insertSpaces (if indent-tabs-mode :json-false t)
-                      :insertFinalNewline (if require-final-newline t :json-false)
-                      :trimFinalNewlines (if delete-trailing-lines t :json-false))
-       args))
-     nil
-     on-type-format)))
-
 (defvar ethersync-cache-session-completions t
   "If non-nil Ethersync caches data during completion sessions.")
 
@@ -2654,9 +1983,6 @@ for which LSP on-type-formatting should be requested."
     (cond ((eq probe t) t)
           (probe (cons probe (length probe)))
           (t (cons pat point)))))
-
-(add-to-list 'completion-category-defaults '(ethersync-capf (styles ethersync--dumb-flex)))
-(add-to-list 'completion-styles-alist '(ethersync--dumb-flex ethersync--dumb-tryc ethersync--dumb-allc))
 
 (defun ethersync-completion-at-point ()
   "Ethersync's `completion-at-point' function."
@@ -2766,17 +2092,17 @@ for which LSP on-type-formatting should be requested."
        :annotation-function
        (lambda (proxy)
          (ethersync--dbind ((CompletionItem) detail kind)
-                           (get-text-property 0 'ethersync--lsp-item proxy)
-                           (let* ((detail (and (stringp detail)
-                                               (not (string= detail ""))
-                                               detail))
-                                  (annotation
-                                   (or detail
-                                       (cdr (assoc kind ethersync--kind-names)))))
-                             (when annotation
-                               (concat " "
-                                       (propertize annotation
-                                                   'face 'font-lock-function-name-face))))))
+             (get-text-property 0 'ethersync--lsp-item proxy)
+           (let* ((detail (and (stringp detail)
+                               (not (string= detail ""))
+                               detail))
+                  (annotation
+                   (or detail
+                       (cdr (assoc kind ethersync--kind-names)))))
+             (when annotation
+               (concat " "
+                       (propertize annotation
+                                   'face 'font-lock-function-name-face))))))
        :company-kind
        ;; Associate each lsp-item with a lsp-kind symbol.
        (lambda (proxy)
@@ -2835,148 +2161,41 @@ for which LSP on-type-formatting should be requested."
                                   (current-buffer))
              (ethersync--dbind ((CompletionItem) insertTextFormat
                                 insertText textEdit additionalTextEdits label)
-                               (funcall
-                                resolve-maybe
-                                (or (get-text-property 0 'ethersync--lsp-item proxy)
-                                    ;; When selecting from the *Completions*
-                                    ;; buffer, `proxy' won't have any properties.
-                                    ;; A lookup should fix that (github#148)
-                                    (get-text-property
-                                     0 'ethersync--lsp-item
-                                     (cl-find proxy (funcall proxies) :test #'string=))))
-                               (let ((snippet-fn (and (eql insertTextFormat 2)
-                                                      (ethersync--snippet-expansion-fn))))
-                                 (cond (textEdit
-                                        ;; Revert buffer back to state when the edit
-                                        ;; was obtained from server. If a `proxy'
-                                        ;; "bar" was obtained from a buffer with
-                                        ;; "foo.b", the LSP edit applies to that
-                                        ;; state, _not_ the current "foo.bar".
-                                        (delete-region orig-pos (point))
-                                        (insert (substring bounds-string (- orig-pos (car bounds))))
-                                        (ethersync--dbind ((TextEdit) range newText) textEdit
-                                                          (pcase-let ((`(,beg . ,end)
-                                                                       (ethersync-range-region range)))
-                                                            (delete-region beg end)
-                                                            (goto-char beg)
-                                                            (funcall (or snippet-fn #'insert) newText))))
-                                       (snippet-fn
-                                        ;; A snippet should be inserted, but using plain
-                                        ;; `insertText'.  This requires us to delete the
-                                        ;; whole completion, since `insertText' is the full
-                                        ;; completion's text.
-                                        (delete-region (- (point) (length proxy)) (point))
-                                        (funcall snippet-fn (or insertText label))))
-                                 (when (cl-plusp (length additionalTextEdits))
-                                   (ethersync--apply-text-edits additionalTextEdits)))
-                               (ethersync--signal-textDocument/didChange)))))))))
-
-(defun ethersync--hover-info (contents &optional _range)
-  (mapconcat #'ethersync--format-markup
-             (if (vectorp contents) contents (list contents)) "\n"))
-
-(defun ethersync--sig-info (sig &optional sig-active briefp)
-  (ethersync--dbind ((SignatureInformation)
-                     ((:label siglabel))
-                     ((:documentation sigdoc)) parameters activeParameter)
-                    sig
-                    (with-temp-buffer
-                      (insert siglabel)
-                      ;; Add documentation, indented so we can distinguish multiple signatures
-                      (when-let (doc (and (not briefp) sigdoc (ethersync--format-markup sigdoc)))
-                        (goto-char (point-max))
-                        (insert "\n" (replace-regexp-in-string "^" "  " doc)))
-                      ;; Try to highlight function name only
-                      (let (first-parlabel)
-                        (cond ((and (cl-plusp (length parameters))
-                                    (vectorp (setq first-parlabel
-                                                   (plist-get (aref parameters 0) :label))))
-                               (save-excursion
-                                 (goto-char (elt first-parlabel 0))
-                                 (skip-syntax-backward "^w")
-                                 (add-face-text-property (point-min) (point)
-                                                         'font-lock-function-name-face)))
-                              ((save-excursion
-                                 (goto-char (point-min))
-                                 (looking-at "\\([^(]*\\)([^)]*)"))
-                               (add-face-text-property (match-beginning 1) (match-end 1)
-                                                       'font-lock-function-name-face))))
-                      ;; Now to the parameters
-                      (cl-loop
-                       with active-param = (or sig-active activeParameter)
-                       for i from 0 for parameter across parameters do
-                       (ethersync--dbind ((ParameterInformation)
-                                          ((:label parlabel))
-                                          ((:documentation pardoc)))
-                                         parameter
-                                         ;; ...perhaps highlight it in the formals list
-                                         (when (eq i active-param)
-                                           (save-excursion
-                                             (goto-char (point-min))
-                                             (pcase-let
-                                                 ((`(,beg ,end)
-                                                   (if (stringp parlabel)
-                                                       (let ((case-fold-search nil))
-                                                         (and (search-forward parlabel (line-end-position) t)
-                                                              (list (match-beginning 0) (match-end 0))))
-                                                     (mapcar #'1+ (append parlabel nil)))))
-                                               (if (and beg end)
-                                                   (add-face-text-property
-                                                    beg end
-                                                    'eldoc-highlight-function-argument)))))
-                                         ;; ...and/or maybe add its doc on a line by its own.
-                                         (let (fpardoc)
-                                           (when (and pardoc (not briefp)
-                                                      (not (string-empty-p
-                                                            (setq fpardoc (ethersync--format-markup pardoc)))))
-                                             (insert "\n  "
-                                                     (propertize
-                                                      (if (stringp parlabel) parlabel
-                                                        (apply #'substring siglabel (mapcar #'1+ parlabel)))
-                                                      'face (and (eq i active-param) 'eldoc-highlight-function-argument))
-                                                     ": " fpardoc)))))
-                      (buffer-string))))
-
-(defun ethersync-signature-eldoc-function (cb)
-  "A member of `eldoc-documentation-functions', for signatures."
-  (when (ethersync-server-capable :signatureHelpProvider)
-    (let ((buf (current-buffer)))
-      (jsonrpc-async-request
-       (ethersync--current-server-or-lose)
-       :textDocument/signatureHelp (ethersync--TextDocumentPositionParams)
-       :success-fn
-       (ethersync--lambda ((SignatureHelp)
-                           signatures activeSignature (activeParameter 0))
-                          (ethersync--when-buffer-window buf
-                                                         (let ((active-sig (and (cl-plusp (length signatures))
-                                                                                (aref signatures (or activeSignature 0)))))
-                                                           (if (not active-sig) (funcall cb nil)
-                                                             (funcall
-                                                              cb (mapconcat (lambda (s)
-                                                                              (ethersync--sig-info s (and (eq s active-sig)
-                                                                                                          activeParameter)
-                                                                                                   nil))
-                                                                            signatures "\n")
-                                                              :echo (ethersync--sig-info active-sig activeParameter t))))))
-       :deferred :textDocument/signatureHelp))
-    t))
-
-(defun ethersync-hover-eldoc-function (cb)
-  "A member of `eldoc-documentation-functions', for hover."
-  (when (ethersync-server-capable :hoverProvider)
-    (let ((buf (current-buffer)))
-      (jsonrpc-async-request
-       (ethersync--current-server-or-lose)
-       :textDocument/hover (ethersync--TextDocumentPositionParams)
-       :success-fn (ethersync--lambda ((Hover) contents range)
-                                      (ethersync--when-buffer-window buf
-                                                                     (let ((info (unless (seq-empty-p contents)
-                                                                                   (ethersync--hover-info contents range))))
-                                                                       (funcall cb info
-                                                                                :echo (and info (string-match "\n" info))))))
-       :deferred :textDocument/hover))
-    (ethersync--highlight-piggyback cb)
-    t))
+                 (funcall
+                  resolve-maybe
+                  (or (get-text-property 0 'ethersync--lsp-item proxy)
+                      ;; When selecting from the *Completions*
+                      ;; buffer, `proxy' won't have any properties.
+                      ;; A lookup should fix that (github#148)
+                      (get-text-property
+                       0 'ethersync--lsp-item
+                       (cl-find proxy (funcall proxies) :test #'string=))))
+               (let ((snippet-fn (and (eql insertTextFormat 2)
+                                      (ethersync--snippet-expansion-fn))))
+                 (cond (textEdit
+                        ;; Revert buffer back to state when the edit
+                        ;; was obtained from server. If a `proxy'
+                        ;; "bar" was obtained from a buffer with
+                        ;; "foo.b", the LSP edit applies to that
+                        ;; state, _not_ the current "foo.bar".
+                        (delete-region orig-pos (point))
+                        (insert (substring bounds-string (- orig-pos (car bounds))))
+                        (ethersync--dbind ((TextEdit) range newText) textEdit
+                          (pcase-let ((`(,beg . ,end)
+                                       (ethersync-range-region range)))
+                            (delete-region beg end)
+                            (goto-char beg)
+                            (funcall (or snippet-fn #'insert) newText))))
+                       (snippet-fn
+                        ;; A snippet should be inserted, but using plain
+                        ;; `insertText'.  This requires us to delete the
+                        ;; whole completion, since `insertText' is the full
+                        ;; completion's text.
+                        (delete-region (- (point) (length proxy)) (point))
+                        (funcall snippet-fn (or insertText label))))
+                 (when (cl-plusp (length additionalTextEdits))
+                   (ethersync--apply-text-edits additionalTextEdits)))
+               (ethersync--signal-textDocument/didChange)))))))))
 
 (defvar ethersync--highlights nil "Overlays for textDocument/documentHighlight.")
 
@@ -2994,71 +2213,18 @@ for which LSP on-type-formatting should be requested."
          (mapc #'delete-overlay ethersync--highlights)
          (setq ethersync--highlights
                (ethersync--when-buffer-window buf
-                                              (mapcar
-                                               (ethersync--lambda ((DocumentHighlight) range)
-                                                                  (pcase-let ((`(,beg . ,end)
-                                                                               (ethersync-range-region range)))
-                                                                    (let ((ov (make-overlay beg end)))
-                                                                      (overlay-put ov 'face 'ethersync-highlight-symbol-face)
-                                                                      (overlay-put ov 'modification-hooks
-                                                                                   `(,(lambda (o &rest _) (delete-overlay o))))
-                                                                      ov)))
-                                               highlights))))
+                 (mapcar
+                  (ethersync--lambda ((DocumentHighlight) range)
+                    (pcase-let ((`(,beg . ,end)
+                                 (ethersync-range-region range)))
+                      (let ((ov (make-overlay beg end)))
+                        (overlay-put ov 'face 'ethersync-highlight-symbol-face)
+                        (overlay-put ov 'modification-hooks
+                                     `(,(lambda (o &rest _) (delete-overlay o))))
+                        ov)))
+                  highlights))))
        :deferred :textDocument/documentHighlight)
       nil)))
-
-(defun ethersync--imenu-SymbolInformation (res)
-  "Compute `imenu--index-alist' for RES vector of SymbolInformation."
-  (mapcar
-   (pcase-lambda (`(,kind . ,objs))
-     (cons
-      (alist-get kind ethersync--symbol-kind-names "Unknown")
-      (mapcan
-       (pcase-lambda (`(,container . ,objs))
-         (let ((elems (mapcar
-                       (ethersync--lambda ((SymbolInformation) kind name location)
-                                          (let ((reg (ethersync-range-region
-                                                      (plist-get location :range)))
-                                                (kind (alist-get kind ethersync--symbol-kind-names)))
-                                            (cons (propertize name
-                                                              'breadcrumb-region reg
-                                                              'breadcrumb-kind kind)
-                                                  (car reg))))
-                       objs)))
-           (if container (list (cons container elems)) elems)))
-       (seq-group-by
-        (ethersync--lambda ((SymbolInformation) containerName) containerName) objs))))
-   (seq-group-by (ethersync--lambda ((SymbolInformation) kind) kind) res)))
-
-(defun ethersync--imenu-DocumentSymbol (res)
-  "Compute `imenu--index-alist' for RES vector of DocumentSymbol."
-  (cl-labels ((dfs (&key name children range kind &allow-other-keys)
-                (let* ((reg (ethersync-range-region range))
-                       (kind (alist-get kind ethersync--symbol-kind-names))
-                       (name (propertize name
-                                         'breadcrumb-region reg
-                                         'breadcrumb-kind kind)))
-                  (if (seq-empty-p children)
-                      (cons name (car reg))
-                    (cons name
-                          (mapcar (lambda (c) (apply #'dfs c)) children))))))
-    (mapcar (lambda (s) (apply #'dfs s)) res)))
-
-(cl-defun ethersync-imenu ()
-  "Ethersync's `imenu-create-index-function'.
-Returns a list as described in docstring of `imenu--index-alist'."
-  (unless (ethersync-server-capable :documentSymbolProvider)
-    (cl-return-from ethersync-imenu))
-  (let* ((res (ethersync--request (ethersync--current-server-or-lose)
-                                  :textDocument/documentSymbol
-                                  `(:textDocument
-                                    ,(ethersync--TextDocumentIdentifier))
-                                  :cancel-on-input non-essential))
-         (head (and (cl-plusp (length res)) (elt res 0))))
-    (when head
-      (ethersync--dcase head
-                        (((SymbolInformation)) (ethersync--imenu-SymbolInformation res))
-                        (((DocumentSymbol)) (ethersync--imenu-DocumentSymbol res))))))
 
 (cl-defun ethersync--apply-text-edits (edits &optional version silent)
   "Apply EDITS for current buffer if at VERSION, or if it's nil.
@@ -3089,7 +2255,7 @@ If SILENT, don't echo progress in mode-line."
                       (when reporter
                         (ethersync--reporter-update reporter (cl-incf done))))))))
             (mapcar (ethersync--lambda ((TextEdit) range newText)
-                                       (cons newText (ethersync-range-region range 'markers)))
+                      (cons newText (ethersync-range-region range 'markers)))
                     (reverse edits)))
       (undo-amalgamate-change-group change-group)
       (when reporter
@@ -3149,46 +2315,46 @@ list ((FILENAME EDITS VERSION)...)."
 ORIGIN is a symbol designating the command that originated this
 edit proposed by the server."
   (ethersync--dbind ((WorkspaceEdit) changes documentChanges) wedit
-                    (let ((prepared
-                           (mapcar (ethersync--lambda ((TextDocumentEdit) textDocument edits)
-                                                      (ethersync--dbind ((VersionedTextDocumentIdentifier) uri version)
-                                                                        textDocument
-                                                                        (list (ethersync-uri-to-path uri) edits version)))
-                                   documentChanges)))
-                      (unless (and changes documentChanges)
-                        ;; We don't want double edits, and some servers send both
-                        ;; changes and documentChanges.  This unless ensures that we
-                        ;; prefer documentChanges over changes.
-                        (cl-loop for (uri edits) on changes by #'cddr
-                                 do (push (list (ethersync-uri-to-path uri) edits) prepared)))
-                      (cl-flet ((notevery-visited-p ()
-                                  (cl-notevery #'find-buffer-visiting
-                                               (mapcar #'car prepared)))
-                                (accept-p ()
-                                  (y-or-n-p
-                                   (format "[ethersync] Server wants to edit:\n%sProceed? "
-                                           (cl-loop
-                                            for (f eds _) in prepared
-                                            concat (format
-                                                    "  %s (%d change%s)\n"
-                                                    f (length eds)
-                                                    (if (> (length eds) 1) "s" ""))))))
-                                (apply ()
-                                  (cl-loop for edit in prepared
-                                           for (path edits version) = edit
-                                           do (with-current-buffer (find-file-noselect path)
-                                                (ethersync--apply-text-edits edits version))
-                                           finally (eldoc) (ethersync--message "Edit successful!"))))
-                        (let ((decision (ethersync--confirm-server-edits origin prepared)))
-                          (cond
-                           ((or (eq decision 'diff)
-                                (and (eq decision 'maybe-diff) (notevery-visited-p)))
-                            (ethersync--propose-changes-as-diff prepared))
-                           ((or (memq decision '(t summary))
-                                (and (eq decision 'maybe-summary) (notevery-visited-p)))
-                            (when (accept-p) (apply)))
-                           (t
-                            (apply))))))))
+    (let ((prepared
+           (mapcar (ethersync--lambda ((TextDocumentEdit) textDocument edits)
+                     (ethersync--dbind ((VersionedTextDocumentIdentifier) uri version)
+                         textDocument
+                       (list (ethersync-uri-to-path uri) edits version)))
+                   documentChanges)))
+      (unless (and changes documentChanges)
+        ;; We don't want double edits, and some servers send both
+        ;; changes and documentChanges.  This unless ensures that we
+        ;; prefer documentChanges over changes.
+        (cl-loop for (uri edits) on changes by #'cddr
+                 do (push (list (ethersync-uri-to-path uri) edits) prepared)))
+      (cl-flet ((notevery-visited-p ()
+                  (cl-notevery #'find-buffer-visiting
+                               (mapcar #'car prepared)))
+                (accept-p ()
+                  (y-or-n-p
+                   (format "[ethersync] Server wants to edit:\n%sProceed? "
+                           (cl-loop
+                            for (f eds _) in prepared
+                            concat (format
+                                    "  %s (%d change%s)\n"
+                                    f (length eds)
+                                    (if (> (length eds) 1) "s" ""))))))
+                (apply ()
+                  (cl-loop for edit in prepared
+                           for (path edits version) = edit
+                           do (with-current-buffer (find-file-noselect path)
+                                (ethersync--apply-text-edits edits version))
+                           finally (eldoc) (ethersync--message "Edit successful!"))))
+        (let ((decision (ethersync--confirm-server-edits origin prepared)))
+          (cond
+           ((or (eq decision 'diff)
+                (and (eq decision 'maybe-diff) (notevery-visited-p)))
+            (ethersync--propose-changes-as-diff prepared))
+           ((or (memq decision '(t summary))
+                (and (eq decision 'maybe-summary) (notevery-visited-p)))
+            (when (accept-p) (apply)))
+           (t
+            (apply))))))))
 
 (defun ethersync-rename (newname)
   "Rename the current symbol to NEWNAME."
@@ -3205,102 +2371,6 @@ edit proposed by the server."
                                               :newName ,newname))
    this-command))
 
-(defun ethersync--code-action-bounds ()
-  "Calculate appropriate bounds depending on region and point."
-  (let (diags boftap)
-    (cond ((use-region-p) `(,(region-beginning) ,(region-end)))
-          ((setq diags (flymake-diagnostics (point)))
-           (cl-loop for d in diags
-                    minimizing (flymake-diagnostic-beg d) into beg
-                    maximizing (flymake-diagnostic-end d) into end
-                    finally (cl-return (list beg end))))
-          ((setq boftap (bounds-of-thing-at-point 'sexp))
-           (list (car boftap) (cdr boftap)))
-          (t
-           (list (point) (point))))))
-
-(defun ethersync-code-actions (beg &optional end action-kind interactive)
-  "Find LSP code actions of type ACTION-KIND between BEG and END.
-Interactively, offer to execute them.
-If ACTION-KIND is nil, consider all kinds of actions.
-Interactively, default BEG and END to region's bounds else BEG is
-point and END is nil, which results in a request for code actions
-at point.  With prefix argument, prompt for ACTION-KIND."
-  (interactive
-   `(,@(ethersync--code-action-bounds)
-     ,(and current-prefix-arg
-           (completing-read "[ethersync] Action kind: "
-                            '("quickfix" "refactor.extract" "refactor.inline"
-                              "refactor.rewrite" "source.organizeImports")))
-     t))
-  (ethersync-server-capable-or-lose :codeActionProvider)
-  (let* ((server (ethersync--current-server-or-lose))
-         (actions
-          (ethersync--request
-           server
-           :textDocument/codeAction
-           (list :textDocument (ethersync--TextDocumentIdentifier)
-                 :range (list :start (ethersync--pos-to-lsp-position beg)
-                              :end (ethersync--pos-to-lsp-position end))
-                 :context
-                 `(:diagnostics
-                   [,@(cl-loop for diag in (flymake-diagnostics beg end)
-                               when (cdr (assoc 'ethersync-lsp-diag
-                                                (ethersync--diag-data diag)))
-                               collect it)]
-                   ,@(when action-kind `(:only [,action-kind]))))))
-         ;; Redo filtering, in case the `:only' didn't go through.
-         (actions (cl-loop for a across actions
-                           when (or (not action-kind)
-                                    ;; github#847
-                                    (string-prefix-p action-kind (plist-get a :kind)))
-                           collect a)))
-    (if interactive
-        (ethersync--read-execute-code-action actions server action-kind)
-      actions)))
-
-(defalias 'ethersync-code-actions-at-mouse (ethersync--mouse-call 'ethersync-code-actions)
-  "Like `ethersync-code-actions', but intended for mouse events.")
-
-(defun ethersync--read-execute-code-action (actions server &optional action-kind)
-  "Helper for interactive calls to `ethersync-code-actions'."
-  (let* ((menu-items
-          (or (cl-loop for a in actions
-                       collect (cons (plist-get a :title) a))
-              (apply #'ethersync--error
-                     (if action-kind `("No \"%s\" code actions here" ,action-kind)
-                       `("No code actions here")))))
-         (preferred-action (cl-find-if
-                            (lambda (menu-item)
-                              (plist-get (cdr menu-item) :isPreferred))
-                            menu-items))
-         (default-action (car (or preferred-action (car menu-items))))
-         (chosen (if (and action-kind (null (cadr menu-items)))
-                     (cdr (car menu-items))
-                   (if (listp last-nonmenu-event)
-                       (x-popup-menu last-nonmenu-event `("Ethersync code actions:"
-                                                          ("dummy" ,@menu-items)))
-                     (cdr (assoc (completing-read
-                                  (format "[ethersync] Pick an action (default %s): "
-                                          default-action)
-                                  menu-items nil t nil nil default-action)
-                                 menu-items))))))
-    (ethersync-execute server chosen)))
-
-(defmacro ethersync--code-action (name kind)
-  "Define NAME to execute KIND code action."
-  `(defun ,name (beg &optional end)
-     ,(format "Execute `%s' code actions between BEG and END." kind)
-     (interactive (ethersync--code-action-bounds))
-     (ethersync-code-actions beg end ,kind t)))
-
-(ethersync--code-action ethersync-code-action-organize-imports "source.organizeImports")
-(ethersync--code-action ethersync-code-action-extract "refactor.extract")
-(ethersync--code-action ethersync-code-action-inline "refactor.inline")
-(ethersync--code-action ethersync-code-action-rewrite "refactor.rewrite")
-(ethersync--code-action ethersync-code-action-quickfix "quickfix")
-
-
 ;;; Dynamic registration
 ;;;
 (cl-defmethod ethersync-register-capability
@@ -3310,11 +2380,11 @@ at point.  With prefix argument, prompt for ACTION-KIND."
   (let* (success
          (globs (mapcar
                  (ethersync--lambda ((FileSystemWatcher) globPattern kind)
-                                    (cons (ethersync--glob-compile globPattern t t)
-                                          ;; the default "7" means bitwise OR of
-                                          ;; WatchKind.Create (1), WatchKind.Change
-                                          ;; (2), WatchKind.Delete (4)
-                                          (or kind 7)))
+                   (cons (ethersync--glob-compile globPattern t t)
+                         ;; the default "7" means bitwise OR of
+                         ;; WatchKind.Create (1), WatchKind.Change
+                         ;; (2), WatchKind.Delete (4)
+                         (or kind 7)))
                  watchers))
          (dirs-to-watch
           (delete-dups (mapcar #'file-name-directory
@@ -3487,136 +2557,12 @@ If NOERROR, return predicate, else erroring function."
 (defvar-local ethersync--outstanding-inlay-regions-timer nil
   "Helper timer for `ethersync--update-hints'")
 
-(defun ethersync--update-hints (from to)
-  "Jit-lock function for Ethersync inlay hints."
-  (cl-symbol-macrolet ((region ethersync--outstanding-inlay-hints-region)
-                       (last-region ethersync--outstanding-inlay-hints-last-region)
-                       (timer ethersync--outstanding-inlay-regions-timer))
-    (setcar region (min (or (car region) (point-max)) from))
-    (setcdr region (max (or (cdr region) (point-min)) to))
-    ;; HACK: We're relying on knowledge of jit-lock internals here.  The
-    ;; condition comparing `jit-lock-context-unfontify-pos' to
-    ;; `point-max' is a heuristic for telling whether this call to
-    ;; `jit-lock-functions' happens after `jit-lock-context-timer' has
-    ;; just run.  Only after this delay should we start the smoothing
-    ;; timer that will eventually call `ethersync--update-hints-1' with the
-    ;; coalesced region.  I wish we didn't need the timer, but sometimes
-    ;; a lot of "non-contextual" calls come in all at once and do verify
-    ;; the condition.  Notice it is a 0 second timer though, so we're
-    ;; not introducing any more delay over jit-lock's timers.
-    (when (= jit-lock-context-unfontify-pos (point-max))
-      (if timer (cancel-timer timer))
-      (let ((buf (current-buffer)))
-        (setq timer (run-at-time
-                     0 nil
-                     (lambda ()
-                       (ethersync--when-live-buffer buf
-                                                    ;; HACK: In some pathological situations
-                                                    ;; (Emacs's own coding.c, for example),
-                                                    ;; jit-lock is calling `ethersync--update-hints'
-                                                    ;; repeatedly with same sequence of
-                                                    ;; arguments, which leads to
-                                                    ;; `ethersync--update-hints-1' being called with
-                                                    ;; the same region repeatedly.  This happens
-                                                    ;; even if the hint-painting code does
-                                                    ;; nothing else other than widen, narrow,
-                                                    ;; move point then restore these things.
-                                                    ;; Possible Emacs bug, but this fixes it.
-                                                    (unless (equal last-region region)
-                                                      (ethersync--update-hints-1 (max (car region) (point-min))
-                                                                                 (min (cdr region) (point-max)))
-                                                      (setq last-region region))
-                                                    (setq region (cons nil nil)
-                                                          timer nil)))))))))
-
-(defun ethersync--update-hints-1 (from to)
-  "Do most work for `ethersync--update-hints', including LSP request."
-  (let* ((buf (current-buffer))
-         (paint-hint
-          (ethersync--lambda ((InlayHint) position kind label paddingLeft paddingRight)
-                             (goto-char (ethersync--lsp-position-to-point position))
-                             (when (or (> (point) to) (< (point) from)) (cl-return))
-                             (let* ((left-pad (and paddingLeft
-                                                   (not (eq paddingLeft :json-false))
-                                                   (not (memq (char-before) '(32 9))) " "))
-                                    (right-pad (and paddingRight
-                                                    (not (eq paddingRight :json-false))
-                                                    (not (memq (char-after) '(32 9))) " "))
-                                    (peg-after-p (eql kind 1)))
-                               (cl-labels
-                                   ((make-ov ()
-                                      (if peg-after-p
-                                          (make-overlay (point) (1+ (point)) nil t)
-                                        (make-overlay (1- (point)) (point) nil nil nil)))
-                                    (do-it (label lpad rpad i n)
-                                      (let* ((firstp (zerop i))
-                                             (tweak-cursor-p (and firstp peg-after-p))
-                                             (ov (make-ov))
-                                             (text (concat lpad label rpad)))
-                                        (when tweak-cursor-p (put-text-property 0 1 'cursor 1 text))
-                                        (overlay-put ov (if peg-after-p 'before-string 'after-string)
-                                                     (propertize
-                                                      text
-                                                      'face (pcase kind
-                                                              (1 'ethersync-type-hint-face)
-                                                              (2 'ethersync-parameter-hint-face)
-                                                              (_ 'ethersync-inlay-hint-face))))
-                                        (overlay-put ov 'priority (if peg-after-p i (- n i)))
-                                        (overlay-put ov 'ethersync--inlay-hint t)
-                                        (overlay-put ov 'evaporate t)
-                                        (overlay-put ov 'ethersync--overlay t))))
-                                 (if (stringp label) (do-it label left-pad right-pad 0 1)
-                                   (cl-loop
-                                    for i from 0 for ldetail across label
-                                    do (ethersync--dbind ((InlayHintLabelPart) value) ldetail
-                                                         (do-it value
-                                                                (and (zerop i) left-pad)
-                                                                (and (= i (1- (length label))) right-pad)
-                                                                i (length label))))))))))
-    (jsonrpc-async-request
-     (ethersync--current-server-or-lose)
-     :textDocument/inlayHint
-     (list :textDocument (ethersync--TextDocumentIdentifier)
-           :range (list :start (ethersync--pos-to-lsp-position from)
-                        :end (ethersync--pos-to-lsp-position to)))
-     :success-fn (lambda (hints)
-                   (ethersync--when-live-buffer buf
-                                                (ethersync--widening
-                                                 ;; Overlays ending right at FROM with an
-                                                 ;; `after-string' property logically belong to
-                                                 ;; the (FROM TO) region.  Likewise, such
-                                                 ;; overlays ending at TO don't logically belong
-                                                 ;; to it.
-                                                 (dolist (o (overlays-in (1- from) to))
-                                                   (when (and (overlay-get o 'ethersync--inlay-hint)
-                                                              (cond ((eq (overlay-end o) from)
-                                                                     (overlay-get o 'after-string))
-                                                                    ((eq (overlay-end o) to)
-                                                                     (overlay-get o 'before-string))
-                                                                    (t)))
-                                                     (delete-overlay o)))
-                                                 (mapc paint-hint hints))))
-     :deferred 'ethersync--update-hints-1)))
-
-(define-minor-mode ethersync-inlay-hints-mode
-  "Minor mode for annotating buffers with LSP server's inlay hints."
-  :global nil
-  (cond (ethersync-inlay-hints-mode
-         (if (ethersync-server-capable :inlayHintProvider)
-             (jit-lock-register #'ethersync--update-hints 'contextual)
-           (ethersync-inlay-hints-mode -1)))
-        (t
-         (jit-lock-unregister #'ethersync--update-hints)
-         (remove-overlays nil nil 'ethersync--inlay-hint t))))
-
-
 ;;; Hacks
 ;;;
 ;; Emacs bug#56407, the optimal solution is in desktop.el, but that's
 ;; harder. For now, use `with-eval-after-load'. See also github#1183.
 (with-eval-after-load 'desktop
-  (add-to-list 'desktop-minor-mode-handlers '(ethersync--managed-mode . ignore))
-  (add-to-list 'desktop-minor-mode-handlers '(ethersync-inlay-hints-mode . ignore)))
+  (add-to-list 'desktop-minor-mode-handlers '(ethersync--managed-mode . ignore)))
 
 
 ;;; Misc
@@ -3626,25 +2572,13 @@ If NOERROR, return predicate, else erroring function."
   (put 'ethersync--debbugs-or-github-bug-uri 'bug-reference-url-format t)
   (defun ethersync--debbugs-or-github-bug-uri ()
     (format (if (string= (match-string 2) "github")
-                "https://github.com/joaotavora/ethersync/issues/%s"
+                "https://github.com/sohalt/ethersync/issues/%s"
               "https://debbugs.gnu.org/%s")
             (match-string 3))))
 
 ;; Add command-mode property manually for compatibility with Emacs < 28.
 (dolist (sym '(ethersync-clear-status
-               ethersync-code-action-inline
-               ethersync-code-action-organize-imports
-               ethersync-code-action-quickfix
-               ethersync-code-action-rewrite
-               ethersync-code-action-rewrite
-               ethersync-code-actions
-               ethersync-find-declaration
-               ethersync-find-implementation
-               ethersync-find-typeDefinition
                ethersync-forget-pending-continuations
-               ethersync-format
-               ethersync-format-buffer
-               ethersync-inlay-hints-mode
                ethersync-reconnect
                ethersync-rename
                ethersync-signal-didChangeConfiguration
