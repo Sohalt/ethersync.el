@@ -170,10 +170,10 @@ the LSP connection.  That can be done by `ethersync-reconnect'."
 (eval-and-compile
   (defvar ethersync--interface-alist
     `(
-      (Position) ((:line . integer) (:character . integer))
-      (Range) ((:start :end))
-      (Delta) (:range (:replacement . string))
-      (RevisionedDelta) (:delta (:revision . integer))
+      (Position ((:line . integer) (:character . integer)))
+      (Range (:start :end))
+      (Delta (:range (:replacement . string)))
+      (RevisionedDelta (:delta (:revision . integer)))
 
       ;; Editor to Server
       (Open (:uri))
@@ -636,8 +636,9 @@ INTERACTIVE is t if called interactively."
 (defvar ethersync--managed-mode) ; forward decl
 
 ;;;###autoload
-(defun ethersync-ensure ()
-  "Start Ethersync session for current buffer if there isn't one.
+(ignore
+ (defun ethersync-ensure ()
+   "Start Ethersync session for current buffer if there isn't one.
 
 Only use this function (in major mode hooks, etc) if you are
 confident that Ethersync can be started safely and efficiently for
@@ -649,18 +650,18 @@ command only needs to be invoked once per project, as all other
 files of a given major mode visited within the same project will
 automatically become managed with no further user intervention
 needed."
-  (let ((buffer (current-buffer)))
-    (cl-labels
-        ((maybe-connect
-           ()
-           (ethersync--when-live-buffer buffer
-             (remove-hook 'post-command-hook #'maybe-connect t)
-             (unless ethersync--managed-mode
-               (condition-case-unless-debug oops
-                   (apply #'ethersync--connect)
-                 (error (ethersync--warn (error-message-string oops))))))))
-      (when buffer-file-name
-        (add-hook 'post-command-hook #'maybe-connect 'append t)))))
+   (let ((buffer (current-buffer)))
+     (cl-labels
+         ((maybe-connect
+            ()
+            (ethersync--when-live-buffer buffer
+              (remove-hook 'post-command-hook #'maybe-connect t)
+              (unless ethersync--managed-mode
+                (condition-case-unless-debug oops
+                    (apply #'ethersync--connect (ethersync--guess-contact))
+                  (error (ethersync--warn (error-message-string oops))))))))
+       (when buffer-file-name
+         (add-hook 'post-command-hook #'maybe-connect 'append t))))))
 
 (defun ethersync-events-buffer (server)
   "Display events buffer for SERVER.
@@ -684,7 +685,7 @@ Use current server's or first available Ethersync events buffer."
   (jsonrpc-forget-pending-continuations server))
 
 (defvar ethersync-connect-hook
-  '(ethersync-signal-didChangeConfiguration)
+  '()
   "Hook run after connecting in `ethersync--connect'.")
 
 (defvar ethersync-server-initialized-hook
@@ -719,7 +720,8 @@ Each function is passed the server as an argument")
 (defun ethersync--connect (project class contact)
   "Connect to MANAGED-MODES, LANGUAGE-IDS, PROJECT, CLASS and CONTACT.
 This docstring appeases checkdoc, that's all."
-  (let* ((default-directory (project-root project))
+  (let* ((contact ("ethersync" "client"))
+         (default-directory (project-root project))
          (nickname (project-name project))
          (readable-name (format "ETHERSYNC (%s)" nickname))
          server-info
@@ -913,7 +915,7 @@ in project `%s'."
                                      cancel-on-input-retval)
   "Like `jsonrpc-request', but for Ethersync requests.
 Unless IMMEDIATE, send pending changes before making request."
-  (unless immediate (ethersync--signal-textDocument/didChange))
+  ;;(unless immediate (ethersync--signal-textDocument/didChange))
   (jsonrpc-request server method params
                    :timeout timeout
                    :cancel-on-input cancel-on-input
@@ -1564,169 +1566,6 @@ Sets `ethersync--TextDocumentIdentifier-uri' (which see) as a side effect."
 (defvar ethersync-cache-session-completions t
   "If non-nil Ethersync caches data during completion sessions.")
 
-(defun ethersync--dumb-flex (pat comp ignorecase)
-  "Return destructively fontified COMP iff PAT matches it."
-  (cl-loop with lcomp = (length comp)
-           with case-fold-search = ignorecase
-           initially (remove-list-of-text-properties 0 lcomp '(face) comp)
-           for x across pat
-           for i = (cl-loop for j from (if i (1+ i) 0) below lcomp
-                            when (char-equal x (aref comp j)) return j)
-           unless i do (cl-return nil)
-           ;; FIXME: could do much better here and coalesce intervals
-           do (add-face-text-property i (1+ i) 'completions-common-part
-                                      nil comp)
-           finally (cl-return comp)))
-
-(defun ethersync--dumb-allc (pat table pred _point) (funcall table pat pred t))
-(defun ethersync--dumb-tryc (pat table pred point)
-  (let ((probe (funcall table pat pred nil)))
-    (cond ((eq probe t) t)
-          (probe (cons probe (length probe)))
-          (t (cons pat point)))))
-
-(defvar ethersync--highlights nil "Overlays for textDocument/documentHighlight.")
-
-(ignore (defun ethersync--highlight-piggyback (_cb)
-          "Request and handle `:textDocument/documentHighlight'."
-          ;; FIXME: Obviously, this is just piggy backing on eldoc's calls for
-          ;; convenience, as shown by the fact that we just ignore cb.
-          (let ((buf (current-buffer)))
-            (when (ethersync-server-capable :documentHighlightProvider)
-              (jsonrpc-async-request
-               (ethersync--current-server-or-lose)
-               :textDocument/documentHighlight (ethersync--TextDocumentPositionParams)
-               :success-fn
-               (lambda (highlights)
-                 (mapc #'delete-overlay ethersync--highlights)
-                 (setq ethersync--highlights
-                       (ethersync--when-buffer-window buf
-                         (mapcar
-                          (ethersync--lambda ((DocumentHighlight) range)
-                            (pcase-let ((`(,beg . ,end)
-                                         (ethersync-range-region range)))
-                              (let ((ov (make-overlay beg end)))
-                                (overlay-put ov 'face 'ethersync-highlight-symbol-face)
-                                (overlay-put ov 'modification-hooks
-                                             `(,(lambda (o &rest _) (delete-overlay o))))
-                                ov)))
-                          highlights))))
-               :deferred :textDocument/documentHighlight)
-              nil))))
-
-(ignore
- (cl-defun ethersync--apply-text-edits (edits &optional version silent)
-   "Apply EDITS for current buffer if at VERSION, or if it's nil.
-If SILENT, don't echo progress in mode-line."
-   (unless edits (cl-return-from ethersync--apply-text-edits))
-   (unless (or (not version) (equal version ethersync--versioned-identifier))
-     (jsonrpc-error "Edits on `%s' require version %d, you have %d"
-                    (current-buffer) version ethersync--versioned-identifier))
-   (atomic-change-group
-     (let* ((change-group (prepare-change-group))
-            (howmany (length edits))
-            (reporter (unless silent
-                        (make-progress-reporter
-                         (format "[ethersync] applying %s edits to `%s'..."
-                                 howmany (current-buffer))
-                         0 howmany)))
-            (done 0))
-       (mapc (pcase-lambda (`(,newText ,beg . ,end))
-               (let ((source (current-buffer)))
-                 (with-temp-buffer
-                   (insert newText)
-                   (let ((temp (current-buffer)))
-                     (with-current-buffer source
-                       (save-excursion
-                         (save-restriction
-                           (narrow-to-region beg end)
-                           (replace-buffer-contents temp)))
-                       (when reporter
-                         (ethersync--reporter-update reporter (cl-incf done))))))))
-             (mapcar (ethersync--lambda ((TextEdit) range newText)
-                       (cons newText (ethersync-range-region range 'markers)))
-                     (reverse edits)))
-       (undo-amalgamate-change-group change-group)
-       (when reporter
-         (progress-reporter-done reporter))))))
-
-(defun ethersync-rename (newname)
-  "Rename the current symbol to NEWNAME."
-  (interactive
-   (list (read-from-minibuffer
-          (format "Rename `%s' to: " (or (thing-at-point 'symbol t)
-                                         "unknown symbol"))
-          nil nil nil nil
-          (symbol-name (symbol-at-point)))))
-  (ethersync--apply-workspace-edit
-   (ethersync--request (ethersync--current-server-or-lose)
-                       :textDocument/rename `(,@(ethersync--TextDocumentPositionParams)
-                                              :newName ,newname))
-   this-command))
-
-;;; Glob heroics
-;;;
-(defun ethersync--glob-parse (glob)
-  "Compute list of (STATE-SYM EMITTER-FN PATTERN)."
-  (with-temp-buffer
-    (save-excursion (insert glob))
-    (cl-loop
-     with grammar = '((:**      "\\*\\*/?"              ethersync--glob-emit-**)
-                      (:*       "\\*"                   ethersync--glob-emit-*)
-                      (:?       "\\?"                   ethersync--glob-emit-?)
-                      (:{}      "{[^][*{}]+}"           ethersync--glob-emit-{})
-                      (:range   "\\[\\^?[^][/,*{}]+\\]" ethersync--glob-emit-range)
-                      (:literal "[^][,*?{}]+"           ethersync--glob-emit-self))
-     until (eobp)
-     collect (cl-loop
-              for (_token regexp emitter) in grammar
-              thereis (and (re-search-forward (concat "\\=" regexp) nil t)
-                           (list (cl-gensym "state-") emitter (match-string 0)))
-              finally (error "Glob '%s' invalid at %s" (buffer-string) (point))))))
-
-(defun ethersync--glob-compile (glob &optional byte-compile noerror)
-  "Convert GLOB into Elisp function.  Maybe BYTE-COMPILE it.
-If NOERROR, return predicate, else erroring function."
-  (let* ((states (ethersync--glob-parse glob))
-         (body `(with-current-buffer (get-buffer-create " *ethersync-glob-matcher*")
-                  (erase-buffer)
-                  (save-excursion (insert string))
-                  (cl-labels ,(cl-loop for (this that) on states
-                                       for (self emit text) = this
-                                       for next = (or (car that) 'eobp)
-                                       collect (funcall emit text self next))
-                    (or (,(caar states))
-                        (error "Glob done but more unmatched text: '%s'"
-                               (buffer-substring (point) (point-max)))))))
-         (form `(lambda (string) ,(if noerror `(ignore-errors ,body) body))))
-    (if byte-compile (byte-compile form) form)))
-
-(defun ethersync--glob-emit-self (text self next)
-  `(,self () (re-search-forward ,(concat "\\=" (regexp-quote text))) (,next)))
-
-(defun ethersync--glob-emit-** (_ self next)
-  `(,self () (or (ignore-errors (save-excursion (,next)))
-                 (and (re-search-forward "\\=/?[^/]+/?") (,self)))))
-
-(defun ethersync--glob-emit-* (_ self next)
-  `(,self () (re-search-forward "\\=[^/]")
-    (or (ignore-errors (save-excursion (,next))) (,self))))
-
-(defun ethersync--glob-emit-? (_ self next)
-  `(,self () (re-search-forward "\\=[^/]") (,next)))
-
-(defun ethersync--glob-emit-{} (arg self next)
-  (let ((alternatives (split-string (substring arg 1 (1- (length arg))) ",")))
-    `(,self ()
-      (or (re-search-forward ,(concat "\\=" (regexp-opt alternatives)) nil t)
-          (error "Failed matching any of %s" ',alternatives))
-      (,next))))
-
-(defun ethersync--glob-emit-range (arg self next)
-  (when (eq ?! (aref arg 1)) (aset arg 1 ?^))
-  `(,self () (re-search-forward ,(concat "\\=" arg)) (,next)))
-
-
 ;;; List connections mode
 
 (define-derived-mode ethersync-list-connections-mode  tabulated-list-mode
@@ -1749,14 +1588,12 @@ If NOERROR, return predicate, else erroring function."
                   (mapcar
                    (lambda (server)
                      (list server
-                           `[,(or (plist-get (ethersync--server-info server) :name)
-                                  (jsonrpc-name server))
+                           `[,(jsonrpc-name server)
                              ,(ethersync-project-nickname server)
                              ,(mapconcat #'symbol-name
                                          (ethersync--major-modes server)
                                          ", ")]))
-                   (cl-reduce #'append
-                              (hash-table-values ethersync--servers-by-project))))
+                   (hash-table-values ethersync--server-by-project)))
       (revert-buffer)
       (pop-to-buffer (current-buffer)))))
 
@@ -1802,8 +1639,6 @@ If NOERROR, return predicate, else erroring function."
 (dolist (sym '(ethersync-clear-status
                ethersync-forget-pending-continuations
                ethersync-reconnect
-               ethersync-rename
-               ethersync-signal-didChangeConfiguration
                ethersync-stderr-buffer))
   (function-put sym 'command-modes '(ethersync--managed-mode)))
 
