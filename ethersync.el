@@ -170,6 +170,11 @@ the LSP connection.  That can be done by `ethersync-reconnect'."
 (eval-and-compile
   (defvar ethersync--messages-alist
     `(
+      (Position) ((:line . integer) (:character . integer))
+      (Range) ((:start :end))
+      (Delta) (:range (:replacement . string))
+      (RevisionedDelta) (:delta (:revision . integer))
+
       ;; Editor to Server
       (Open (:uri))
       (Close (:uri))
@@ -402,15 +407,6 @@ treated as in `ethersync--dbind'."
 (cl-defgeneric ethersync-handle-notification (server method &rest params)
   "Handle SERVER's METHOD notification with PARAMS.")
 
-(cl-defgeneric ethersync-workspace-folders (server)
-  "Return workspaceFolders for SERVER."
-  (let ((project (ethersync--project server)))
-    (vconcat
-     (mapcar (lambda (dir)
-               (list :uri (ethersync-path-to-uri dir)
-                     :name (abbreviate-file-name dir)))
-             `(,(project-root project) ,@(project-external-roots project))))))
-
 (defclass ethersync-lsp-server (jsonrpc-process-connection)
   ((project-nickname
     :documentation "Short nickname for the associated project."
@@ -499,12 +495,6 @@ If optional MARKERS, make markers instead."
     (cons beg end)))
 
 ;;; Process/server management
-(defun ethersync--language-ids (s) "LSP Language ID strings for server S's modes."
-       (mapcar #'cdr (ethersync--languages s)))
-
-(cl-defmethod initialize-instance :before ((_server ethersync-lsp-server) &optional args)
-  (cl-remf args :initializationOptions))
-
 (defvar ethersync--servers-by-project (make-hash-table :test #'equal)
   "Keys are projects.  Values are lists of processes.")
 
@@ -926,11 +916,15 @@ in project `%s'."
                             (line-beginning-position n))))
   "Return position of first character in current line.")
 
+(defface ethersync-highlight-symbol-face
+  '((t (:inherit bold)))
+  "Face used to highlight the symbol at point.")
+
 (cl-defun ethersync--request (server method params &key
                                      immediate
                                      timeout cancel-on-input
                                      cancel-on-input-retval)
-  "Like `jsonrpc-request', but for Ethersync LSP requests.
+  "Like `jsonrpc-request', but for Ethersync requests.
 Unless IMMEDIATE, send pending changes before making request."
   (unless immediate (ethersync--signal-textDocument/didChange))
   (jsonrpc-request server method params
@@ -1431,179 +1425,23 @@ Uses THING, FACE, DEFS and PREPEND."
     (jsonrpc-error "Unknown request method `%s'" method)))
 
 (cl-defmethod ethersync-handle-notification
-  (_server (_method (eql window/showMessage)) &key type message)
-  "Handle notification window/showMessage."
-  (ethersync--message (propertize "Server reports (type=%s): %s"
-                                  'face (if (<= type 1) 'error))
-                      type message))
-
-(cl-defmethod ethersync-handle-request
-  (_server (_method (eql window/showMessageRequest))
-           &key type message actions &allow-other-keys)
-  "Handle server request window/showMessageRequest."
-  (let* ((actions (append actions nil)) ;; gh#627
-         (label (completing-read
-                 (concat
-                  (format (propertize "[ethersync] Server reports (type=%s): %s"
-                                      'face (if (or (not type) (<= type 1)) 'error))
-                          type message)
-                  "\nChoose an option: ")
-                 (or (mapcar (lambda (obj) (plist-get obj :title)) actions)
-                     '("OK"))
-                 nil t (plist-get (elt actions 0) :title))))
-    (if label `(:title ,label) :null)))
+  (_server (_method (eql edit)) &key uri delta)
+  "Handle notification edit."
+  (ethersync--dbind ((Delta) range replacement) delta
+    (ethersync--message "Received edit (uri=%s, replacement=%s)"
+                        uri replacement)))
 
 (cl-defmethod ethersync-handle-notification
-  (_server (_method (eql window/logMessage)) &key _type _message)
-  "Handle notification window/logMessage.") ;; noop, use events buffer
-
-(cl-defmethod ethersync-handle-notification
-  (_server (_method (eql telemetry/event)) &rest _any)
-  "Handle notification telemetry/event.") ;; noop, use events buffer
-
-(defalias 'ethersync--reporter-update
-  (if (> emacs-major-version 26) #'progress-reporter-update
-    (lambda (a b &optional _c) (progress-reporter-update a b))))
-
-(cl-defmethod ethersync-handle-notification
-  (server (_method (eql $/progress)) &key token value)
-  "Handle $/progress notification identified by TOKEN from SERVER."
-  (when ethersync-report-progress
-    (cl-flet ((fmt (&rest args) (mapconcat #'identity args " "))
-              (mkpr (title)
-                (if (eq ethersync-report-progress 'messages)
-                    (make-progress-reporter
-                     (format "[ethersync] %s %s: %s"
-                             (ethersync-project-nickname server) token title))
-                  (list 'ethersync--mode-line-reporter token title)))
-              (upd (pcnt msg &optional
-                         (pr (gethash token (ethersync--progress-reporters server))))
-                (cond
-                 ((eq (car pr) 'ethersync--mode-line-reporter)
-                  (setcdr (cddr pr) (list msg pcnt))
-                  (force-mode-line-update t))
-                 (pr (ethersync--reporter-update pr pcnt msg)))))
-      (ethersync--dbind ((WorkDoneProgress) kind title percentage message) value
-        (pcase kind
-          ("begin"
-           (upd percentage (fmt title message)
-                (puthash token (mkpr title)
-                         (ethersync--progress-reporters server))))
-          ("report" (upd percentage message))
-          ("end" (upd (or percentage 100) message)
-           (run-at-time 2 nil
-                        (lambda ()
-                          (remhash token (ethersync--progress-reporters server))))))))))
+  (_server (_method (eql cursor)) &key userid uri ranges name)
+  "Handle notification cursor."
+  (ethersync--message "Received cursor (userid=%s, uri=%s, name=%s)"
+                      userid uri name))
 
 (defvar-local ethersync--TextDocumentIdentifier-cache nil
   "LSP TextDocumentIdentifier-related cached info for current buffer.
 Value is (TRUENAME . (:uri STR)), where STR is what is sent to the
 server on textDocument/didOpen and similar calls.  TRUENAME is the
 expensive cached value of `file-truename'.")
-
-(cl-defmethod ethersync-handle-notification
-  (server (_method (eql textDocument/publishDiagnostics)) &key uri diagnostics
-          &allow-other-keys) ; FIXME: doesn't respect `ethersync-strict-mode'
-  "Handle notification publishDiagnostics."
-  (cl-flet ((ethersync--diag-type (sev)
-              (cond ((null sev) 'ethersync-error)
-                    ((<= sev 1) 'ethersync-error)
-                    ((= sev 2)  'ethersync-warning)
-                    (t          'ethersync-note)))
-            (mess (source code message)
-              (concat source (and code (format " [%s]" code)) ": " message))
-            (find-it (abspath)
-              ;; `find-buffer-visiting' would be natural, but calls the
-              ;; potentially slow `file-truename' (bug#70036).
-              (cl-loop for b in (ethersync--managed-buffers server)
-                       when (with-current-buffer b
-                              (equal (car ethersync--TextDocumentIdentifier-cache)
-                                     abspath))
-                       return b)))
-    (if-let* ((path (expand-file-name (ethersync-uri-to-path uri)))
-              (buffer (find-it path)))
-        (with-current-buffer buffer
-          (cl-loop
-           initially
-           (setq flymake-list-only-diagnostics
-                 (assoc-delete-all path flymake-list-only-diagnostics))
-           for diag-spec across diagnostics
-           collect (ethersync--dbind ((Diagnostic) range code message severity source tags)
-                       diag-spec
-                     (setq message (mess source code message))
-                     (pcase-let
-                         ((`(,beg . ,end) (ethersync-range-region range)))
-                       ;; Fallback to `flymake-diag-region' if server
-                       ;; botched the range
-                       (when (= beg end)
-                         (if-let* ((st (plist-get range :start))
-                                   (diag-region
-                                    (flymake-diag-region
-                                     (current-buffer) (1+ (plist-get st :line))
-                                     (plist-get st :character))))
-                             (setq beg (car diag-region) end (cdr diag-region))
-                           (ethersync--widening
-                            (goto-char (point-min))
-                            (setq beg
-                                  (ethersync--bol
-                                   (1+ (plist-get (plist-get range :start) :line))))
-                            (setq end
-                                  (line-end-position
-                                   (1+ (plist-get (plist-get range :end) :line)))))))
-                       (ethersync--make-diag
-                        (current-buffer) beg end
-                        (ethersync--diag-type severity)
-                        message `((ethersync-lsp-diag . ,diag-spec))
-                        (when-let ((faces
-                                    (cl-loop for tag across tags
-                                             when (alist-get tag ethersync--tag-faces)
-                                             collect it)))
-                          `((face . ,faces))))))
-           into diags
-           finally (cond ((and
-                           ;; only add to current report if Flymake
-                           ;; starts on idle-timer (github#958)
-                           (not (null flymake-no-changes-timeout))
-                           ethersync--current-flymake-report-fn)
-                          (ethersync--report-to-flymake diags))
-                         (t
-                          (setq ethersync--diagnostics diags)))))
-      (cl-loop
-       for diag-spec across diagnostics
-       collect (ethersync--dbind ((Diagnostic) code range message severity source) diag-spec
-                 (setq message (mess source code message))
-                 (let* ((start (plist-get range :start))
-                        (line (1+ (plist-get start :line)))
-                        (char (1+ (plist-get start :character))))
-                   (ethersync--make-diag
-                    path (cons line char) nil (ethersync--diag-type severity) message)))
-       into diags
-       finally
-       (setq flymake-list-only-diagnostics
-             (assoc-delete-all path flymake-list-only-diagnostics))
-       (push (cons path diags) flymake-list-only-diagnostics)))))
-
-(cl-defun ethersync--register-unregister (server things how)
-  "Helper for `registerCapability'.
-THINGS are either registrations or unregisterations (sic)."
-  (cl-loop
-   for thing in (cl-coerce things 'list)
-   do (ethersync--dbind ((Registration) id method registerOptions) thing
-        (apply (cl-ecase how
-                 (register 'ethersync-register-capability)
-                 (unregister 'ethersync-unregister-capability))
-               server (intern method) id registerOptions))))
-
-(cl-defmethod ethersync-handle-request
-  (server (_method (eql client/registerCapability)) &key registrations)
-  "Handle server request client/registerCapability."
-  (ethersync--register-unregister server registrations 'register))
-
-(cl-defmethod ethersync-handle-request
-  (server (_method (eql client/unregisterCapability))
-          &key unregisterations) ;; XXX: "unregisterations" (sic)
-  "Handle server request client/unregisterCapability."
-  (ethersync--register-unregister server unregisterations 'unregister))
 
 (cl-defmethod ethersync-handle-request
   (_server (_method (eql workspace/applyEdit)) &key _label edit)
