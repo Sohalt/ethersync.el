@@ -164,7 +164,6 @@ the LSP connection.  That can be done by `ethersync-reconnect'."
     vec)
   "Like `url-path-allowed-chars' but more restrictive.")
 
-
 ;;; Message verification helpers
 ;;;
 (eval-and-compile
@@ -172,8 +171,8 @@ the LSP connection.  That can be done by `ethersync-reconnect'."
     `(
       (Position ((:line . integer) (:character . integer)))
       (Range (:start :end))
-      (Delta (:range (:replacement . string)))
-      (RevisionedDelta (:delta (:revision . integer)))
+      (Delta (:range :replacement))
+      (RevisionedDelta (:delta :revision))
 
       ;; Editor to Server
       (Open (:uri))
@@ -181,7 +180,7 @@ the LSP connection.  That can be done by `ethersync-reconnect'."
       (ESCursor (:uri :ranges))
 
       ;; Server to Editor
-      (SECursor ((:userid . integer) :uri :ranges) ((:name . string)))
+      (SECursor (:userid :uri :ranges) ((:name . string)))
 
       ;; Both directions
       (Edit (:uri :delta)))
@@ -782,106 +781,41 @@ This docstring appeases checkdoc, that's all."
            :notification-dispatcher (funcall spread #'ethersync-handle-notification)
            :request-dispatcher (funcall spread #'ethersync-handle-request)
            :on-shutdown #'ethersync--on-shutdown
-           initargs))
-         (canceled nil)
-         (tag (make-symbol "connected-catch-tag")))
+           initargs)))
     (when server-info
       (jsonrpc--debug server "Running language server: %s"
                       (string-join server-info " ")))
     (setf (ethersync--saved-initargs server) initargs)
     (setf (ethersync--project server) project)
     (setf (ethersync--project-nickname server) nickname)
-    (setf (ethersync--languages server)
-          (cl-loop for m in managed-modes for l in language-ids
-                   collect (cons m l)))
     (run-hook-with-args 'ethersync-server-initialized-hook server)
     ;; Now start the handshake.  To honor `ethersync-sync-connect'
     ;; maybe-sync-maybe-async semantics we use `jsonrpc-async-request'
     ;; and mimic most of `jsonrpc-request'.
-    (unwind-protect
-        (condition-case _quit
-            (let ((retval
-                   (catch tag
-                     (jsonrpc-async-request
-                      server
-                      :initialize
-                      (list :processId
-                            (unless (or ethersync-withhold-process-id
-                                        (file-remote-p default-directory)
-                                        (eq (jsonrpc-process-type server)
-                                            'network))
-                              (emacs-pid))
-                            :clientInfo
-                            (append
-                             '(:name "Ethersync")
-                             (let ((v (package-get-version)))
-                               (and v (list :version v))))
-                            ;; Maybe turn trampy `/ssh:foo@bar:/path/to/baz.py'
-                            ;; into `/path/to/baz.py', so LSP groks it.
-                            :rootPath (file-local-name
-                                       (expand-file-name default-directory))
-                            :rootUri (ethersync-path-to-uri default-directory)
-                            :initializationOptions (ethersync-initialization-options
-                                                    server)
-                            :capabilities (ethersync-client-capabilities server)
-                            :workspaceFolders (ethersync-workspace-folders server))
-                      :success-fn
-                      (lambda ()
-                        (unless canceled
-                          (puthash project server ethersync--server-by-project)
-                          (dolist (buffer (buffer-list))
-                            (with-current-buffer buffer
-                              ;; No need to pass SERVER as an argument: it has
-                              ;; been registered in `ethersync--server-by-project',
-                              ;; so that it can be found (and cached) from
-                              ;; `ethersync--maybe-activate-editing-mode' in any
-                              ;; managed buffer.
-                              (ethersync--maybe-activate-editing-mode)))
-                          (setf (ethersync--inhibit-autoreconnect server)
-                                (cond
-                                 ((booleanp ethersync-autoreconnect)
-                                  (not ethersync-autoreconnect))
-                                 ((cl-plusp ethersync-autoreconnect)
-                                  (run-with-timer
-                                   ethersync-autoreconnect nil
-                                   (lambda ()
-                                     (setf (ethersync--inhibit-autoreconnect server)
-                                           (null ethersync-autoreconnect)))))))
-                          (run-hook-with-args 'ethersync-connect-hook server)
-                          (ethersync--message
-                           "Connected! Server `%s' now managing `%s' buffers \
-in project `%s'."
-                           (jsonrpc-name server)
-                           managed-modes
-                           (ethersync-project-nickname server))
-                          (when tag (throw tag t))))
-                      :timeout ethersync-connect-timeout
-                      :error-fn (lambda ()
-                                  (unless canceled
-                                    (jsonrpc-shutdown server)
-                                    (let ((msg "Failed to connect"))
-                                      (if tag (throw tag `(error . ,msg))
-                                        (ethersync--error msg)))))
-                      :timeout-fn (lambda ()
-                                    (unless canceled
-                                      (jsonrpc-shutdown server)
-                                      (let ((msg (format "Timed out after %s seconds"
-                                                         ethersync-connect-timeout)))
-                                        (if tag (throw tag `(error . ,msg))
-                                          (ethersync--error msg))))))
-                     (cond ((numberp ethersync-sync-connect)
-                            (accept-process-output nil ethersync-sync-connect))
-                           (ethersync-sync-connect
-                            (while t (accept-process-output
-                                      nil ethersync-connect-timeout)))))))
-              (pcase retval
-                (`(error . ,msg) (ethersync--error msg))
-                (`nil (ethersync--message "Waiting in background for server `%s'"
-                                          (jsonrpc-name server))
-                      nil)
-                (_ server)))
-          (quit (jsonrpc-shutdown server) (setq canceled 'quit)))
-      (setq tag nil))))
+    (puthash project server ethersync--server-by-project)
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        ;; No need to pass SERVER as an argument: it has
+        ;; been registered in `ethersync--server-by-project',
+        ;; so that it can be found (and cached) from
+        ;; `ethersync--maybe-activate-editing-mode' in any
+        ;; managed buffer.
+        (ethersync--maybe-activate-editing-mode)))
+    (setf (ethersync--inhibit-autoreconnect server)
+          (cond
+           ((booleanp ethersync-autoreconnect)
+            (not ethersync-autoreconnect))
+           ((cl-plusp ethersync-autoreconnect)
+            (run-with-timer
+             ethersync-autoreconnect nil
+             (lambda ()
+               (setf (ethersync--inhibit-autoreconnect server)
+                     (null ethersync-autoreconnect)))))))
+    (run-hook-with-args 'ethersync-connect-hook server)
+    (ethersync--message
+     "Connected! Server `%s' now managing buffers in project `%s'."
+     (jsonrpc-name server)
+     (ethersync-project-nickname server))))
 
 ;;; Helpers (move these to API?)
 ;;;
@@ -1573,7 +1507,7 @@ Sets `ethersync--TextDocumentIdentifier-uri' (which see) as a side effect."
 \\{ethersync-list-connections-mode-map}"
   :interactive nil
   (setq-local tabulated-list-format
-              `[("Language server" 16) ("Project name" 16) ("Modes handled" 16)])
+              `[("Server" 16) ("Project name" 16)])
   (tabulated-list-init-header))
 
 (defun ethersync-list-connections ()
@@ -1589,10 +1523,7 @@ Sets `ethersync--TextDocumentIdentifier-uri' (which see) as a side effect."
                    (lambda (server)
                      (list server
                            `[,(jsonrpc-name server)
-                             ,(ethersync-project-nickname server)
-                             ,(mapconcat #'symbol-name
-                                         (ethersync--major-modes server)
-                                         ", ")]))
+                             ,(ethersync-project-nickname server)]))
                    (hash-table-values ethersync--server-by-project)))
       (revert-buffer)
       (pop-to-buffer (current-buffer)))))

@@ -1,8 +1,11 @@
-cursors:
+receive cursors:
 
-`make-overlay`
+```
+(let ((ov (make-overlay (point) (1+ (point)) (current-buffer))))
+  (overlay-put ov 'face 'highlight))
+```
 
-edit
+receive edit
 
 ```elisp
 (mapc (pcase-lambda (`(,newText ,beg . ,end))
@@ -20,4 +23,10 @@ edit
             (mapcar (ethersync--lambda ((TextEdit) range newText)
                       (cons newText (ethersync-range-region range 'markers)))
                     (reverse edits)))
+```
+
+send edit
+
+```
+ethersync--post-self-insert-hook
 ```
