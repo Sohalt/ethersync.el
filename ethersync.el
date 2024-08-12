@@ -405,7 +405,7 @@ treated as in `ethersync--dbind'."
 (cl-defgeneric ethersync-handle-notification (server method &rest params)
   "Handle SERVER's METHOD notification with PARAMS.")
 
-(defclass ethersync-lsp-server (jsonrpc-process-connection)
+(defclass ethersync-server (jsonrpc-process-connection)
   ((project-nickname
     :documentation "Short nickname for the associated project."
     :accessor ethersync--project-nickname
@@ -607,7 +607,7 @@ code-analysis via `xref-find-definitions', `flymake-mode',
 
 PROJECT is a project object as returned by `project-current'.
 
-CLASS is a subclass of `ethersync-lsp-server'.
+CLASS is a subclass of `ethersync-server'.
 
 CONTACT specifies how to contact the server.  It is a
 keyword-value plist used to initialize CLASS or a plain list as
@@ -689,7 +689,7 @@ Use current server's or first available Ethersync events buffer."
 
 (defvar ethersync-server-initialized-hook
   '()
-  "Hook run after a `ethersync-lsp-server' instance is created.
+  "Hook run after a `ethersync-server' instance is created.
 
 That is before a connection was established.  Use
 `ethersync-connect-hook' to hook into when a connection was
@@ -715,6 +715,8 @@ Each function is passed the server as an argument")
 
 (defvar-local ethersync--cached-server nil
   "A cached reference to the current Ethersync server.")
+
+(ethersync--connect (project-current) (ethersync))
 
 (defun ethersync--connect (project class contact)
   "Connect to MANAGED-MODES, LANGUAGE-IDS, PROJECT, CLASS and CONTACT.
@@ -1319,7 +1321,7 @@ expensive cached value of `file-truename'.")
 (defvar-local ethersync--recent-changes nil
   "Recent buffer changes as collected by `ethersync--track-changes-fetch'.")
 
-(cl-defmethod jsonrpc-connection-ready-p ((_server ethersync-lsp-server) _what)
+(cl-defmethod jsonrpc-connection-ready-p ((_server ethersync-server) _what)
   "Tell if SERVER is ready for WHAT in current buffer."
   (and (cl-call-next-method) (not ethersync--recent-changes)))
 
@@ -1378,76 +1380,6 @@ expensive cached value of `file-truename'.")
                  (run-hooks 'ethersync--document-changed-hook)
                  (setq ethersync--change-idle-timer nil)))))
          (current-buffer))))
-
-(defvar-local ethersync-workspace-configuration ()
-  "Configure LSP servers specifically for a given project.
-
-This variable's value should be a plist (SECTION VALUE ...).
-SECTION is a keyword naming a parameter section relevant to a
-particular server.  VALUE is a plist or a primitive type
-converted to JSON also understood by that server.
-
-Instead of a plist, an alist ((SECTION . VALUE) ...) can be used
-instead, but this variant is less reliable and not recommended.
-
-This variable should be set as a directory-local variable.  See
-info node `(emacs)Directory Variables' for various ways to do that.
-
-Here's an example value that establishes two sections relevant to
-the Pylsp and Gopls LSP servers:
-
-  (:pylsp (:plugins (:jedi_completion (:include_params t
-                                       :fuzzy t)
-                     :pylint (:enabled :json-false)))
-   :gopls (:usePlaceholders t))
-
-The value of this variable can also be a unary function of a
-single argument, which will be a connected `ethersync-lsp-server'
-instance.  The function runs with `default-directory' set to the
-root of the current project.  It should return an object of the
-format described above.")
-
-;;;###autoload
-(put 'ethersync-workspace-configuration 'safe-local-variable #'listp)
-
-(defun ethersync-show-workspace-configuration (&optional server)
-  "Dump `ethersync-workspace-configuration' as JSON for debugging."
-  (interactive (list (ethersync--read-server "Show workspace configuration for" t)))
-  (let ((conf (ethersync--workspace-configuration-plist server)))
-    (with-current-buffer (get-buffer-create "*ETHERSYNC workspace configuration*")
-      (erase-buffer)
-      (insert (jsonrpc--json-encode conf))
-      (with-no-warnings
-        (require 'json)
-        (when (require 'json-mode nil t) (json-mode))
-        (json-pretty-print-buffer))
-      (pop-to-buffer (current-buffer)))))
-
-(defun ethersync--workspace-configuration-plist (server &optional path)
-  "Returns SERVER's workspace configuration as a plist.
-If PATH consider that file's `file-name-directory' to get the
-local value of the `ethersync-workspace-configuration' variable, else
-use the root of SERVER's `ethersync--project'."
-  (let ((val (with-temp-buffer
-               (setq default-directory
-                     ;; See github#1281
-                     (if path (if (file-directory-p path)
-                                  (file-name-as-directory path)
-                                (file-name-directory path))
-                       (project-root (ethersync--project server))))
-               ;; Set the major mode to be the first of the managed
-               ;; modes.  This is the one the user started ethersync in.
-               (setq major-mode (car (ethersync--major-modes server)))
-               (hack-dir-local-variables-non-file-buffer)
-               (if (functionp ethersync-workspace-configuration)
-                   (funcall ethersync-workspace-configuration server)
-                 ethersync-workspace-configuration))))
-    (or (and (consp (car val))
-             (cl-loop for (section . v) in val
-                      collect (if (keywordp section) section
-                                (intern (format ":%s" section)))
-                      collect v))
-        val)))
 
 (defun ethersync--TextDocumentIdentifier ()
   "Compute TextDocumentIdentifier object for current buffer.
