@@ -581,7 +581,7 @@ suitable root directory for a given LSP server's purposes."
   (cadr project))
 
 ;;;###autoload
-(defun ethersync (project class contact)
+(defun ethersync (project)
   "Start Ethersync for PROJECT's buffers under MANAGED-MAJOR-MODES.
 
 This starts a Language Server Protocol (LSP) server suitable for
@@ -592,26 +592,7 @@ start and CONTACT specifies how to connect to the server.
 PROJECT is guessed from `project-find-functions'.  The search for active
 projects in this context binds `ethersync-lsp-context' (which see).
 
-If it can't guess, it prompts the user for the mode and the
-server.  With a single \\[universal-argument] prefix arg, it
-always prompts for COMMAND.  With two \\[universal-argument], it
-also always prompts for MANAGED-MAJOR-MODE.
-
-The LSP server of CLASS is started (or contacted) via CONTACT.
-If this operation is successful, current *and future* file
-buffers of MANAGED-MAJOR-MODE inside PROJECT become \"managed\"
-by the LSP server, meaning the information about their contents is
-exchanged periodically with the server to provide enhanced
-code-analysis via `xref-find-definitions', `flymake-mode',
-`eldoc-mode', and `completion-at-point', among others.
-
-PROJECT is a project object as returned by `project-current'.
-
-CLASS is a subclass of `ethersync-server'.
-
-CONTACT specifies how to contact the server.  It is a
-keyword-value plist used to initialize CLASS or a plain list as
-described in `ethersync-server-programs', which see."
+PROJECT is a project object as returned by `project-current'."
   (interactive
    (let ((current-server (ethersync-current-server)))
      (unless (or (null current-server)
@@ -619,7 +600,7 @@ described in `ethersync-server-programs', which see."
 [ethersync] Shut down current connection before attempting new one?"))
        (user-error "[ethersync] Connection attempt aborted by user"))
      (when current-server (ignore-errors (ethersync-shutdown current-server)))))
-  (ethersync--connect project class contact))
+  (ethersync--connect project 'ethersync-server '("ethersync" "client")))
 
 (defun ethersync-reconnect (server &optional interactive)
   "Reconnect to SERVER.
@@ -716,38 +697,17 @@ Each function is passed the server as an argument")
 (defvar-local ethersync--cached-server nil
   "A cached reference to the current Ethersync server.")
 
-(ethersync--connect (project-current) (ethersync))
-
+(ethersync--connect (project-current) 'ethersync-server '("ethersync" "client"))
 (defun ethersync--connect (project class contact)
   "Connect to MANAGED-MODES, LANGUAGE-IDS, PROJECT, CLASS and CONTACT.
 This docstring appeases checkdoc, that's all."
-  (let* ((contact '("ethersync" "client"))
-         (default-directory (project-root project))
+  (let* ((default-directory (project-root project))
          (nickname (project-name project))
          (readable-name (format "ETHERSYNC (%s)" nickname))
          server-info
          (contact (if (functionp contact) (funcall contact) contact))
          (initargs
-          (cond ((keywordp (car contact)) contact)
-                ((integerp (cadr contact))
-                 (setq server-info (list (format "%s:%s" (car contact)
-                                                 (cadr contact))))
-                 `(:process ,(lambda ()
-                               (apply #'open-network-stream
-                                      readable-name nil
-                                      (car contact) (cadr contact)
-                                      (cddr contact)))))
-                ((and (stringp (car contact))
-                      (cl-find-if (lambda (x)
-                                    (or (eq x :autoport)
-                                        (eq (car-safe x) :autoport)))
-                                  contact))
-                 (setq server-info (list "<inferior process>"))
-                 `(:process ,(jsonrpc-autoport-bootstrap
-                              readable-name
-                              contact
-                              :connect-args '(:noquery t))))
-                ((stringp (car contact))
+          (cond ((stringp (car contact))
                  (let* ((probe (cl-position-if #'keywordp contact))
                         (more-initargs (and probe (cl-subseq contact probe)))
                         (contact (cl-subseq contact 0 probe)))
@@ -1147,22 +1107,21 @@ Use `ethersync-managed-p' to determine if current buffer is managed.")
 (defvar revert-buffer-preserve-modes)
 (defun ethersync--after-revert-hook ()
   "Ethersync's `after-revert-hook'."
-  (when revert-buffer-preserve-modes (ethersync--signal-textDocument/didOpen)))
+  (when revert-buffer-preserve-modes (ethersync--signal-open)))
 
 (defun ethersync--maybe-activate-editing-mode ()
   "Maybe activate `ethersync--managed-mode'.
 
-If it is activated, also signal textDocument/didOpen."
+If it is activated, also signal 'open'."
   (unless ethersync--managed-mode
     ;; Called when `revert-buffer-in-progress-p' is t but
     ;; `revert-buffer-preserve-modes' is nil.
     (when (and buffer-file-name (ethersync-current-server))
       (setq ethersync--diagnostics nil)
       (ethersync--managed-mode)
-      (ethersync--signal-textDocument/didOpen)
-      ;; Run user hook after 'textDocument/didOpen' so server knows
+      (ethersync--signal-open)
+      ;; Run user hook after 'open' so server knows
       ;; about the buffer.
-      (ethersync-inlay-hints-mode 1)
       (run-hooks 'ethersync-managed-mode-hook))))
 
 (add-hook 'after-change-major-mode-hook #'ethersync--maybe-activate-editing-mode)
@@ -1293,7 +1252,7 @@ Uses THING, FACE, DEFS and PREPEND."
 (defvar-local ethersync--TextDocumentIdentifier-cache nil
   "LSP TextDocumentIdentifier-related cached info for current buffer.
 Value is (TRUENAME . (:uri STR)), where STR is what is sent to the
-server on textDocument/didOpen and similar calls.  TRUENAME is the
+server on open and similar calls.  TRUENAME is the
 expensive cached value of `file-truename'.")
 
 (defvar-local ethersync--versioned-identifier 0)
