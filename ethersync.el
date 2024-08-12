@@ -719,7 +719,7 @@ Each function is passed the server as an argument")
 (defun ethersync--connect (project class contact)
   "Connect to MANAGED-MODES, LANGUAGE-IDS, PROJECT, CLASS and CONTACT.
 This docstring appeases checkdoc, that's all."
-  (let* ((contact ("ethersync" "client"))
+  (let* ((contact '("ethersync" "client"))
          (default-directory (project-root project))
          (nickname (project-name project))
          (readable-name (format "ETHERSYNC (%s)" nickname))
