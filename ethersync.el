@@ -621,7 +621,7 @@ INTERACTIVE is t if called interactively."
 (defvar ethersync--managed-mode) ; forward decl
 
 (defun ethersync--guess-contact (&optional interactive)
-  '((project-current) 'ethersync-server '("ethersync" "client")))
+  `(,(project-current) ethersync-server ("ethersync" "client")))
 
 ;;;###autoload
 (ignore
@@ -705,7 +705,6 @@ Each function is passed the server as an argument")
 (defvar-local ethersync--cached-server nil
   "A cached reference to the current Ethersync server.")
 
-(ethersync--connect (project-current) 'ethersync-server '("ethersync" "client"))
 (defun ethersync--connect (project class contact)
   "Connect to MANAGED-MODES, LANGUAGE-IDS, PROJECT, CLASS and CONTACT.
 This docstring appeases checkdoc, that's all."
@@ -753,7 +752,7 @@ This docstring appeases checkdoc, that's all."
            :on-shutdown #'ethersync--on-shutdown
            initargs)))
     (when server-info
-      (jsonrpc--debug server "Running language server: %s"
+      (jsonrpc--debug server "Running ethersync client: %s"
                       (string-join server-info " ")))
     (setf (ethersync--saved-initargs server) initargs)
     (setf (ethersync--project server) project)
@@ -819,7 +818,7 @@ This docstring appeases checkdoc, that's all."
                                      cancel-on-input-retval)
   "Like `jsonrpc-request', but for Ethersync requests.
 Unless IMMEDIATE, send pending changes before making request."
-  ;;(unless immediate (ethersync--signal-textDocument/didChange))
+  (unless immediate (ethersync--signal-edit))
   (jsonrpc-request server method params
                    :timeout timeout
                    :cancel-on-input cancel-on-input
@@ -1060,12 +1059,6 @@ Use `ethersync-managed-p' to determine if current buffer is managed.")
     (add-hook 'change-major-mode-hook #'ethersync--managed-mode-off nil t)
     (add-hook 'post-self-insert-hook #'ethersync--post-self-insert-hook nil t)
     (add-hook 'pre-command-hook #'ethersync--pre-command-hook nil t)
-    (ethersync--setq-saving xref-prompt-for-identifier nil)
-    (ethersync--setq-saving flymake-diagnostic-functions '(ethersync-flymake-backend))
-    (ethersync--setq-saving company-backends '(company-capf))
-    (ethersync--setq-saving company-tooltip-align-annotations t)
-    (ethersync--setq-saving eldoc-documentation-strategy
-                            #'eldoc-documentation-compose)
     (cl-pushnew (current-buffer) (ethersync--managed-buffers (ethersync-current-server))))
    (t
     (remove-hook 'kill-buffer-hook #'ethersync--managed-mode-off t)
@@ -1282,9 +1275,9 @@ expensive cached value of `file-truename'.")
   "Tell if SERVER is ready for WHAT in current buffer."
   (and (cl-call-next-method) (not ethersync--recent-changes)))
 
-(defvar-local ethersync--change-idle-timer nil "Idle timer for didChange signals.")
+(defvar-local ethersync--change-idle-timer nil "Idle timer for edit signals.")
 
-(defvar ethersync--document-changed-hook '(ethersync--signal-textDocument/didChange)
+(defvar ethersync--document-changed-hook '(ethersync--signal-edit)
   "Internal hook for doing things when the document changes.")
 
 (defun ethersync--track-changes-fetch (id)
@@ -1311,6 +1304,7 @@ expensive cached value of `file-truename'.")
     (add-hook hook fname append local)))
 
 (defun ethersync--track-changes-signal (id &optional distance)
+  (message "estcs")
   (cond
    (distance
     ;; When distance is <100, we may as well coalesce the changes.
