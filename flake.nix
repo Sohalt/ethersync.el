@@ -12,7 +12,7 @@
       pkgs = nixpkgs.legacyPackages.${system};
     in {
       devShells.default = pkgs.mkShell {
-        packages = [ethersync.packages.${system}.ethersync];
+        packages = let ep = ethersync.packages.${system}; in [ep.ethersync ep.neovim];
       };
     });
 }

@@ -6,11 +6,11 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1723115376,
-        "narHash": "sha256-tGxTjHJOVz0FrRMPuT7Ug41kcpo/16pM1/2Xp3M/T5Q=",
+        "lastModified": 1723490122,
+        "narHash": "sha256-YFz0MsPjrQ0yJNv6RRmxOqmthoB0Yaqpg6FMOUAd7Sk=",
         "owner": "ethersync",
         "repo": "ethersync",
-        "rev": "1c4e1a20ac9939a3e8ac79e0591776526c6de8f7",
+        "rev": "065af4a9c9ca189203f6d8959f637ba7e9debf91",
         "type": "github"
       },
       "original": {
