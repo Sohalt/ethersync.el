@@ -123,6 +123,10 @@ as 0, i.e. don't block at all."
   "If non-nil, shut down server after killing last managed buffer."
   :type 'boolean)
 
+(defcustom ethersync-send-changes-idle-time 0.5
+  "Don't tell server of changes before Emacs's been idle for this many seconds."
+  :type 'number)
+
 (defcustom ethersync-events-buffer-config
   (list :size (or (bound-and-true-p ethersync-events-buffer-size) 2000000)
         :format 'full)
@@ -581,7 +585,7 @@ suitable root directory for a given LSP server's purposes."
   (cadr project))
 
 ;;;###autoload
-(defun ethersync (project)
+(defun ethersync (project class contact)
   "Start Ethersync for PROJECT's buffers under MANAGED-MAJOR-MODES.
 
 This starts a Language Server Protocol (LSP) server suitable for
@@ -599,8 +603,9 @@ PROJECT is a project object as returned by `project-current'."
                  (y-or-n-p "\
 [ethersync] Shut down current connection before attempting new one?"))
        (user-error "[ethersync] Connection attempt aborted by user"))
-     (when current-server (ignore-errors (ethersync-shutdown current-server)))))
-  (ethersync--connect project 'ethersync-server '("ethersync" "client")))
+     (prog1 (ethersync--guess-contact t)
+       (when current-server (ignore-errors (ethersync-shutdown current-server))))))
+  (ethersync--connect project class contact))
 
 (defun ethersync-reconnect (server &optional interactive)
   "Reconnect to SERVER.
@@ -614,6 +619,9 @@ INTERACTIVE is t if called interactively."
   (ethersync--message "Reconnected!"))
 
 (defvar ethersync--managed-mode) ; forward decl
+
+(defun ethersync--guess-contact (&optional interactive)
+  '((project-current) 'ethersync-server '("ethersync" "client")))
 
 ;;;###autoload
 (ignore
@@ -952,8 +960,7 @@ and just return it.  PROMPT shouldn't end with a question mark."
                           being hash-values of ethersync--server-by-project
                           collect server))
         (name (lambda (srv)
-                (format "%s %s" (ethersync-project-nickname srv)
-                        (ethersync--major-modes srv)))))
+                (ethersync-project-nickname srv))))
     (cond ((null servers)
            (ethersync--error "No servers!"))
           ((or (cdr servers) (not dont-if-just-the-one))
@@ -1261,17 +1268,8 @@ expensive cached value of `file-truename'.")
   "If non-nil, value of the last inserted character in buffer.")
 
 (defun ethersync--post-self-insert-hook ()
-  "Set `ethersync--last-inserted-char', maybe call on-type-formatting."
-  (setq ethersync--last-inserted-char last-command-event)
-  (let ((ot-provider (ethersync-server-capable :documentOnTypeFormattingProvider)))
-    (when (and ot-provider
-               (ignore-errors ; github#906, some LS's send empty strings
-                 (or (eq ethersync--last-inserted-char
-                         (seq-first (plist-get ot-provider :firstTriggerCharacter)))
-                     (cl-find ethersync--last-inserted-char
-                              (plist-get ot-provider :moreTriggerCharacter)
-                              :key #'seq-first))))
-      (ethersync-format (point) nil ethersync--last-inserted-char))))
+  "Set `ethersync--last-inserted-char'."
+  (setq ethersync--last-inserted-char last-command-event))
 
 (defun ethersync--pre-command-hook ()
   "Reset some temporary variables."
@@ -1349,7 +1347,7 @@ Sets `ethersync--TextDocumentIdentifier-uri' (which see) as a side effect."
                                          (buffer-file-name
                                           (buffer-base-buffer)))))))
       (setq ethersync--TextDocumentIdentifier-cache
-            `(,truename . (:uri ,(ethersync-path-to-uri truename :truenamep t))))))
+            `(,truename . ,(ethersync-path-to-uri truename :truenamep t)))))
   (cdr ethersync--TextDocumentIdentifier-cache))
 
 (defun ethersync--signal-edit ()
@@ -1359,9 +1357,10 @@ Sets `ethersync--TextDocumentIdentifier-uri' (which see) as a side effect."
     (ethersync--TextDocumentIdentifier)
     (let* ((server (ethersync--current-server-or-lose)))
       (jsonrpc-notify
-       server :edit
+       server
+       :edit
        (list
-        :uri ethersync--TextDocumentIdentifier-uri
+        :uri (ethersync--TextDocumentIdentifier)
         :delta
         (cl-loop for (beg end len text) in (reverse ethersync--recent-changes)
                  vconcat `[,(list :range `(:start ,beg :end ,end)
@@ -1377,7 +1376,7 @@ Sets `ethersync--TextDocumentIdentifier-uri' (which see) as a side effect."
   (ethersync--TextDocumentIdentifier)
   (jsonrpc-notify
    (ethersync--current-server-or-lose)
-   :open `(:uri ,ethersync--TextDocumentIdentifier-uri)))
+   :open `(:uri ,(ethersync--TextDocumentIdentifier))))
 
 (defun ethersync--signal-close ()
   "Send close to server."
@@ -1386,7 +1385,7 @@ Sets `ethersync--TextDocumentIdentifier-uri' (which see) as a side effect."
     (ethersync--TextDocumentIdentifier)
     (jsonrpc-notify
      (ethersync--current-server-or-lose)
-     :close `(:uri ,ethersync--TextDocumentIdentifier-uri))))
+     :close `(:uri ,(ethersync--TextDocumentIdentifier)))))
 
 (defvar ethersync-cache-session-completions t
   "If non-nil Ethersync caches data during completion sessions.")
