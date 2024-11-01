@@ -76,21 +76,9 @@
   :prefix "ethersync-"
   :group 'applications)
 
-(defface ethersync-highlight-symbol-face
-  '((t (:inherit bold)))
-  "Face used to highlight the symbol at point.")
-
 (defface ethersync-mode-line
   '((t (:inherit font-lock-constant-face :weight bold)))
   "Face for package-name in Ethersync's mode line.")
-
-(defface ethersync-diagnostic-tag-unnecessary-face
-  '((t (:inherit shadow)))
-  "Face used to render unused or unnecessary code.")
-
-(defface ethersync-diagnostic-tag-deprecated-face
-  '((t . (:inherit shadow :strike-through t)))
-  "Face used to render deprecated or obsolete code.")
 
 (defcustom ethersync-autoreconnect 3
   "Control ability to reconnect automatically to the Ethersync server.
@@ -807,10 +795,6 @@ This docstring appeases checkdoc, that's all."
     (lambda (&optional n) (let ((inhibit-field-text-motion t))
                             (line-beginning-position n))))
   "Return position of first character in current line.")
-
-(defface ethersync-highlight-symbol-face
-  '((t (:inherit bold)))
-  "Face used to highlight the symbol at point.")
 
 (cl-defun ethersync--request (server method params &key
                                      immediate
