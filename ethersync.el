@@ -1396,24 +1396,8 @@ Sets `ethersync--TextDocumentIdentifier-uri' (which see) as a side effect."
       (revert-buffer)
       (pop-to-buffer (current-buffer)))))
 
-
-;;; Inlay hints
-(defface ethersync-inlay-hint-face '((t (:height 0.8 :inherit shadow)))
-  "Face used for inlay hint overlays.")
-
-(defface ethersync-type-hint-face '((t (:inherit ethersync-inlay-hint-face)))
-  "Face used for type inlay hint overlays.")
-
-(defface ethersync-parameter-hint-face '((t (:inherit ethersync-inlay-hint-face)))
-  "Face used for parameter inlay hint overlays.")
-
-(defvar-local ethersync--outstanding-inlay-hints-region (cons nil nil)
-  "Jit-lock-calculated (FROM . TO) region with potentially outdated hints")
-
-(defvar-local ethersync--outstanding-inlay-hints-last-region nil)
-
-(defvar-local ethersync--outstanding-inlay-regions-timer nil
-  "Helper timer for `ethersync--update-hints'")
+(defface ethersync-cursor-name-face '((t (:height 0.8 :inherit shadow)))
+  "Face used for cursor name overlays.")
 
 ;;; Hacks
 ;;;
