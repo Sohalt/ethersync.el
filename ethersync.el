@@ -1227,11 +1227,116 @@ Uses THING, FACE, DEFS and PREPEND."
     (ethersync--message "Received edit (uri=%s, replacement=%s)"
                         uri replacement)))
 
+(defface ethersync-cursor-face
+  '((t (:inverse-video t)))
+  "The face used for fake cursors"
+  :group 'ethersync)
+
+(defface ethersync-cursor-bar-face
+  `((t (:height 1 :background ,(face-attribute 'cursor :background))))
+  "The face used for fake cursors if the cursor-type is bar"
+  :group 'ethersync)
+
+(defface ethersync-region-face
+  '((t :inherit region))
+  "The face used for fake regions"
+  :group 'ethersync)
+
+(defface ethersync-cursor-name-face
+  '((t (:height 0.8 :inherit shadow)))
+  "Face used for cursor name overlays."
+  :group 'ethersync)
+
+(defcustom ethersync-match-cursor-style t
+  "If non-nil, attempt to match the cursor style that the user
+has selected.  Namely, use vertical bars the user has configured
+Emacs to use that cursor.
+
+If nil, just use standard rectangle cursors for all fake cursors.
+
+In some modes/themes, the bar fake cursors are either not
+rendered or shift text."
+  :type '(boolean)
+  :group 'ethersync)
+
+(defun ethersync-cursor-is-bar ()
+  "Return non-nil if the cursor is a bar."
+  (let ((cursor-type
+         (if (eq cursor-type t)
+             (frame-parameter nil 'cursor-type)
+           cursor-type)))
+    (or (eq cursor-type 'bar)
+        (and (listp cursor-type)
+             (eq (car cursor-type) 'bar)))))
+
+(defun ethersync-make-cursor-overlay-at-eol (pos)
+  "Create overlay to look like cursor at end of line."
+  (let ((overlay (make-overlay pos pos nil nil nil)))
+    (if (and ethersync-match-cursor-style (ethersync-cursor-is-bar))
+        (overlay-put overlay 'before-string (propertize "|" 'face 'ethersync-cursor-bar-face))
+      (overlay-put overlay 'after-string (propertize " " 'face 'ethersync-cursor-face)))
+    overlay))
+
+(defun ethersync-make-cursor-overlay-inline (pos)
+  "Create overlay to look like cursor inside text."
+  (let ((overlay (make-overlay pos (1+ pos) nil nil nil)))
+    (if (and ethersync-match-cursor-style (ethersync-cursor-is-bar))
+        (overlay-put overlay 'before-string (propertize "|" 'face 'ethersync-cursor-bar-face))
+      (overlay-put overlay 'face 'ethersync-cursor-face))
+    overlay))
+
+(defun ethersync-make-cursor-overlay-at-point ()
+  "Create overlay to look like cursor.
+Special case for end of line, because overlay over a newline
+highlights the entire width of the window."
+  (if (eolp)
+      (ethersync-make-cursor-overlay-at-eol (point))
+    (ethersync-make-cursor-overlay-inline (point))))
+
+(defun ethersync-make-region-overlay-between-point-and-mark ()
+  "Create overlay to look like active region."
+  (let ((overlay (make-overlay (mark) (point) nil nil t)))
+    (overlay-put overlay 'face 'ethersync-region-face)
+    (overlay-put overlay 'type 'additional-region)
+    overlay))
+
+(defun highlight-ranges (ranges)
+  "Highlight multiple RANGES in the current buffer.
+Each range should be of the form:
+  '(:start (:character START-CHAR :line START-LINE)
+    :end (:character END-CHAR :line END-LINE))."
+  (interactive)
+  (dotimes (i (length ranges))
+    (let* ((range (aref ranges i))
+           (start (plist-get range :start))
+           (end (plist-get range :end))
+           (start-line (plist-get start :line))
+           (start-char (plist-get start :character))
+           (end-line (plist-get end :line))
+           (end-char (plist-get end :character))
+           ;; Convert line/character to buffer positions
+           (start-pos (save-excursion
+                        (goto-char (point-min))
+                        (forward-line (1- start-line))
+                        (forward-char start-char)
+                        (point)))
+           (end-pos (save-excursion
+                      (goto-char (point-min))
+                      (forward-line (1- end-line))
+                      (forward-char end-char)
+                      (point))))
+      ;; Create the overlay and set its face
+      (let* ((overlay (make-overlay start-pos end-pos)))
+        (overlay-put overlay 'after-string (propertize " " 'face 'ethersync-cursor-face))
+        (ethersync--message "start-pos=%s,end-pos=%s,buffer=%s" start-pos end-pos (current-buffer))))))
+
 (cl-defmethod ethersync-handle-notification
   (_server (_method (eql cursor)) &key userid uri ranges name)
   "Handle notification cursor."
-  (ethersync--message "Received cursor (userid=%s, uri=%s, name=%s)"
-                      userid uri name))
+  (with-current-buffer (car (ethersync--managed-buffers (ethersync--current-server-or-lose)))
+    (highlight-ranges ranges))
+  (ethersync--message "Received cursor (userid=%s, uri=%s, name=%s, ranges=%s)"
+                      userid uri name ranges))
 
 (defvar-local ethersync--TextDocumentIdentifier-cache nil
   "LSP TextDocumentIdentifier-related cached info for current buffer.
@@ -1395,9 +1500,6 @@ Sets `ethersync--TextDocumentIdentifier-uri' (which see) as a side effect."
                    (hash-table-values ethersync--server-by-project)))
       (revert-buffer)
       (pop-to-buffer (current-buffer)))))
-
-(defface ethersync-cursor-name-face '((t (:height 0.8 :inherit shadow)))
-  "Face used for cursor name overlays.")
 
 ;;; Hacks
 ;;;
