@@ -1201,6 +1201,16 @@ Uses THING, FACE, DEFS and PREPEND."
 ;;; Protocol implementation (Requests, notifications, etc)
 ;;;
 (cl-defmethod ethersync-handle-notification
+  (_server (_method (eql edit)) &key uri delta revision)
+  "Handle notification edit."
+  (cl-loop
+   for delta-spec across delta
+   collect
+   (ethersync--dbind ((Delta) range replacement) delta-spec
+     (ethersync--message "Received edit (uri=%s, range=%s replacement=%s)"
+                         uri range replacement))))
+
+(cl-defmethod ethersync-handle-notification
   (_server method &key &allow-other-keys)
   "Handle unknown notification."
   (unless (or (string-prefix-p "$" (format "%s" method))
@@ -1212,13 +1222,6 @@ Uses THING, FACE, DEFS and PREPEND."
   "Handle unknown request."
   (when (memq 'disallow-unknown-methods ethersync-strict-mode)
     (jsonrpc-error "Unknown request method `%s'" method)))
-
-(cl-defmethod ethersync-handle-notification
-  (_server (_method (eql edit)) &key uri delta)
-  "Handle notification edit."
-  (ethersync--dbind ((Delta) range replacement) delta
-    (ethersync--message "Received edit (uri=%s, replacement=%s)"
-                        uri replacement)))
 
 (defface ethersync-cursor-face
   '((t (:inverse-video t)))
