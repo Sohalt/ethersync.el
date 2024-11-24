@@ -1200,6 +1200,28 @@ Uses THING, FACE, DEFS and PREPEND."
 
 ;;; Protocol implementation (Requests, notifications, etc)
 ;;;
+(defun ethersync-replace-range (range replacement)
+  "Replace the region specified by line and column START-LINE, START-COL, END-LINE, and END-COL with REPLACEMENT."
+  (let* ((start (plist-get range :start))
+         (end (plist-get range :end))
+         (start-line (plist-get start :line))
+         (start-char (plist-get start :character))
+         (end-line (plist-get end :line))
+         (end-char (plist-get end :character))
+         ;; Convert line/character to buffer positions
+         (start-pos (save-excursion
+                      (goto-char (point-min))
+                      (forward-line (1- start-line))
+                      (forward-char start-char)
+                      (point))))
+    (save-excursion
+      (save-excursion
+        (goto-char (point-min))
+        (forward-line (1- end-line))
+        (forward-char end-char)
+        (delete-region start-pos (point))
+        (insert replacement)))))
+
 (cl-defmethod ethersync-handle-notification
   (_server (_method (eql edit)) &key uri delta revision)
   "Handle notification edit."
@@ -1208,7 +1230,10 @@ Uses THING, FACE, DEFS and PREPEND."
    collect
    (ethersync--dbind ((Delta) range replacement) delta-spec
      (ethersync--message "Received edit (uri=%s, range=%s replacement=%s)"
-                         uri range replacement))))
+                         uri range replacement)
+     (let* ((server (ethersync--current-server-or-lose))
+            (buffer (gethash (ethersync-uri-to-path uri) (ethersync--path-to-buffer server))))
+       (with-current-buffer buffer (ethersync-replace-range range replacement))))))
 
 (cl-defmethod ethersync-handle-notification
   (_server method &key &allow-other-keys)
