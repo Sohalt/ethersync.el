@@ -1041,8 +1041,6 @@ Use `ethersync-managed-p' to determine if current buffer is managed.")
     (add-hook 'before-revert-hook #'ethersync--signal-close nil t)
     (add-hook 'after-revert-hook #'ethersync--after-revert-hook nil t)
     (add-hook 'change-major-mode-hook #'ethersync--managed-mode-off nil t)
-    (add-hook 'post-self-insert-hook #'ethersync--post-self-insert-hook nil t)
-    (add-hook 'pre-command-hook #'ethersync--pre-command-hook nil t)
     (cl-pushnew (current-buffer) (ethersync--managed-buffers (ethersync-current-server))))
    (t
     (remove-hook 'kill-buffer-hook #'ethersync--managed-mode-off t)
@@ -1050,8 +1048,6 @@ Use `ethersync-managed-p' to determine if current buffer is managed.")
     (remove-hook 'before-revert-hook #'ethersync--signal-close t)
     (remove-hook 'after-revert-hook #'ethersync--after-revert-hook t)
     (remove-hook 'change-major-mode-hook #'ethersync--managed-mode-off t)
-    (remove-hook 'post-self-insert-hook #'ethersync--post-self-insert-hook t)
-    (remove-hook 'pre-command-hook #'ethersync--pre-command-hook t)
     (cl-loop for (var . saved-binding) in ethersync--saved-bindings
              do (set (make-local-variable var) saved-binding))
     (run-hooks 'ethersync-managed-mode-hook)
@@ -1345,17 +1341,6 @@ server on open and similar calls.  TRUENAME is the
 expensive cached value of `file-truename'.")
 
 (defvar-local ethersync--versioned-identifier 0)
-
-(defvar-local ethersync--last-inserted-char nil
-  "If non-nil, value of the last inserted character in buffer.")
-
-(defun ethersync--post-self-insert-hook ()
-  "Set `ethersync--last-inserted-char'."
-  (setq ethersync--last-inserted-char last-command-event))
-
-(defun ethersync--pre-command-hook ()
-  "Reset some temporary variables."
-  (setq ethersync--last-inserted-char nil))
 
 (defvar-local ethersync--recent-changes nil
   "Recent buffer changes as collected by `ethersync--track-changes-fetch'.")
