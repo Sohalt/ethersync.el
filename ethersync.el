@@ -1493,7 +1493,7 @@ Sets `ethersync--TextDocumentIdentifier-uri' (which see) as a side effect."
   (put 'ethersync--debbugs-or-github-bug-uri 'bug-reference-url-format t)
   (defun ethersync--debbugs-or-github-bug-uri ()
     (format (if (string= (match-string 2) "github")
-                "https://github.com/sohalt/ethersync/issues/%s"
+                "https://github.com/joaotavora/eglot/issues/%s"
               "https://debbugs.gnu.org/%s")
             (match-string 3))))
 
