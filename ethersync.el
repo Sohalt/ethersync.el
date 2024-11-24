@@ -414,9 +414,6 @@ treated as in `ethersync--dbind'."
     :initform t
     :documentation "Generalized boolean inhibiting auto-reconnection if true."
     :accessor ethersync--inhibit-autoreconnect)
-   (file-watches
-    :documentation "Map (DIR -> (WATCH ID1 ID2...)) for `didChangeWatchedFiles'."
-    :initform (make-hash-table :test #'equal) :accessor ethersync--file-watches)
    (managed-buffers
     :initform nil
     :documentation "List of buffers managed by server."
@@ -530,10 +527,6 @@ PRESERVE-BUFFERS as in `ethersync-shutdown', which see."
     (let (;; Avoid duplicate shutdowns (github#389)
           (ethersync-autoshutdown nil))
       (ethersync--when-live-buffer buffer (ethersync--managed-mode-off))))
-  ;; Kill any expensive watches
-  (maphash (lambda (_dir watch-and-ids)
-             (file-notify-rm-watch (car watch-and-ids)))
-           (ethersync--file-watches server))
   ;; Sever the project/server relationship for `server'
   (remhash (ethersync--project server) ethersync--server-by-project)
   (cond ((ethersync--shutdown-requested server)
@@ -1072,9 +1065,8 @@ Use `ethersync-managed-p' to determine if current buffer is managed.")
   "Return logical Ethersync server for current buffer, nil if none."
   (setq ethersync--cached-server
         (or ethersync--cached-server
-            (and (not (eq major-mode 'fundamental-mode)) ; gh#1330
-                 (gethash (ethersync--current-project)
-                          ethersync--server-by-project)))))
+            (gethash (ethersync--current-project)
+                     ethersync--server-by-project))))
 
 (defun ethersync--current-server-or-lose ()
   "Return current logical Ethersync server connection or error."
