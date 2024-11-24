@@ -418,6 +418,9 @@ treated as in `ethersync--dbind'."
     :initform nil
     :documentation "List of buffers managed by server."
     :accessor ethersync--managed-buffers)
+   (path-to-buffer
+    :documentation "Map (path -> buffer)."
+    :initform (make-hash-table :test #'equal) :accessor ethersync--path-to-buffer)
    (saved-initargs
     :documentation "Saved initargs for reconnection purposes."
     :accessor ethersync--saved-initargs))
@@ -1088,13 +1091,15 @@ If it is activated, also signal 'open'."
   (unless ethersync--managed-mode
     ;; Called when `revert-buffer-in-progress-p' is t but
     ;; `revert-buffer-preserve-modes' is nil.
-    (when (and buffer-file-name (ethersync-current-server))
-      (setq ethersync--diagnostics nil)
-      (ethersync--managed-mode)
-      (ethersync--signal-open)
-      ;; Run user hook after 'open' so server knows
-      ;; about the buffer.
-      (run-hooks 'ethersync-managed-mode-hook))))
+    (let ((server (ethersync-current-server)))
+      (when (and buffer-file-name server)
+        (setq ethersync--diagnostics nil)
+        (ethersync--managed-mode)
+        (ethersync--signal-open)
+        (puthash buffer-file-name (current-buffer) (ethersync--path-to-buffer server))
+        ;; Run user hook after 'open' so server knows
+        ;; about the buffer.
+        (run-hooks 'ethersync-managed-mode-hook)))))
 
 (add-hook 'after-change-major-mode-hook #'ethersync--maybe-activate-editing-mode)
 
@@ -1321,8 +1326,9 @@ Each range should be of the form:
 (cl-defmethod ethersync-handle-notification
   (_server (_method (eql cursor)) &key userid uri ranges name)
   "Handle notification cursor."
-  (with-current-buffer (car (ethersync--managed-buffers (ethersync--current-server-or-lose)))
-    (highlight-ranges ranges))
+  (let* ((server (ethersync--current-server-or-lose))
+         (buffer (gethash (ethersync-uri-to-path uri) (ethersync--path-to-buffer server))))
+    (with-current-buffer buffer (highlight-ranges ranges)))
   (ethersync--message "Received cursor (userid=%s, uri=%s, name=%s, ranges=%s)"
                       userid uri name ranges))
 
