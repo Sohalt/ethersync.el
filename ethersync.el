@@ -1473,9 +1473,6 @@ Sets `ethersync--TextDocumentIdentifier-uri' (which see) as a side effect."
             `(,truename . ,(ethersync-path-to-uri truename :truenamep t)))))
   (cdr ethersync--TextDocumentIdentifier-cache))
 
-(cl-destructuring-bind (beg end len text) (car ethersync--recent-changes)
-  (list :range `(:start ,beg :end ,end)
-        :replacement text))
 (defun ethersync--signal-edit ()
   "Send edit to server."
   (ethersync--track-changes-fetch ethersync--track-changes)
