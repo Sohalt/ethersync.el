@@ -175,7 +175,7 @@ the LSP connection.  That can be done by `ethersync-reconnect'."
       (SECursor (:userid :uri :ranges) ((:name . string)))
 
       ;; Both directions
-      (Edit (:uri :delta)))
+      (Edit (:uri :revision :delta)))
     "Alist (INTERFACE-NAME . INTERFACE) of known Ethersync messages.
 
 INTERFACE-NAME is a symbol designated by the spec as
@@ -1484,6 +1484,7 @@ Sets `ethersync--TextDocumentIdentifier-uri' (which see) as a side effect."
        :edit
        (list
         :uri (ethersync--TextDocumentIdentifier)
+        :revision ethersync--versioned-identifier
         :delta
         ;;FIXME handle multiple changes
         (cl-destructuring-bind (beg end len text) (car ethersync--recent-changes)
