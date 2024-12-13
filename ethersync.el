@@ -1370,20 +1370,20 @@ highlights the entire width of the window."
     (overlay-put overlay 'type 'additional-region)
     overlay))
 
-(defun highlight-ranges (ranges)
+(defun draw-cursors (username ranges)
   "Highlight multiple RANGES in the current buffer.
 Each range should be of the form:
   '(:start (:character START-CHAR :line START-LINE)
     :end (:character END-CHAR :line END-LINE))."
   (interactive)
   (dotimes (i (length ranges))
-    (let* ((range (aref ranges i))
-           (start (plist-get range :start))
-           (end (plist-get range :end))
-           (start-line (plist-get start :line))
-           (start-char (plist-get start :character))
-           (end-line (plist-get end :line))
-           (end-char (plist-get end :character))
+    (let* ((range (map-elt ranges i))
+           (start (map-elt range :start))
+           (end (map-elt range :end))
+           (start-line (map-elt start :line))
+           (start-char (map-elt start :character))
+           (end-line (map-elt end :line))
+           (end-char (map-elt end :character))
            ;; Convert line/character to buffer positions
            (start-pos (save-excursion
                         (goto-char (point-min))
@@ -1397,15 +1397,17 @@ Each range should be of the form:
                       (point))))
       ;; Create the overlay and set its face
       (let* ((overlay (make-overlay start-pos end-pos)))
-        (overlay-put overlay 'after-string (propertize " " 'face 'ethersync-cursor-face))
-        (ethersync--message "start-pos=%s,end-pos=%s,buffer=%s" start-pos end-pos (current-buffer))))))
+        (overlay-put overlay 'ethersync-cursor t)
+        (overlay-put overlay 'after-string (concat (propertize " " 'face 'ethersync-cursor-face) (propertize username 'face 'ethersync-cursor-name-face)))))))
 
 (cl-defmethod ethersync-handle-notification
   (_server (_method (eql cursor)) &key userid uri ranges name)
   "Handle notification cursor."
   (let* ((server (ethersync--current-server-or-lose))
          (buffer (map-elt (ethersync--path-to-buffer server) (ethersync-uri-to-path uri))))
-    (with-current-buffer buffer (highlight-ranges ranges)))
+    (with-current-buffer buffer
+      (remove-overlays (point-min) (point-max) 'ethersync-cursor t)
+      (draw-cursors name ranges)))
   (ethersync--message "Received cursor (userid=%s, uri=%s, name=%s, ranges=%s)"
                       userid uri name ranges))
 
