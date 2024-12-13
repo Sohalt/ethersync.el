@@ -1021,6 +1021,23 @@ Use `ethersync-managed-p' to determine if current buffer is managed.")
 
 (defvar-local ethersync--track-changes nil)
 
+(make-variable-buffer-local 'ethersync-last-post-command-position)
+
+(defun ethersync--track-cursor ()
+  (unless (equal (point) ethersync-last-post-command-position)
+    (let* ((server (ethersync--current-server-or-lose))
+           (lsp-pos (ethersync--pos-to-lsp-position (point))))
+      (message "move to %s" lsp-pos)
+      (jsonrpc-notify
+       ;; server
+       (ethersync--current-server-or-lose)
+       :cursor
+       `(:uri ,(ethersync--TextDocumentIdentifier)
+         :ranges [(:start ,lsp-pos :end ,lsp-pos)]))
+      (setq ethersync--recent-changes nil)
+      (jsonrpc--call-deferred server))
+    (setq ethersync-last-post-command-position (point))))
+
 (define-minor-mode ethersync--managed-mode
   "Mode for source buffers managed by some Ethersync project."
   :init-value nil :lighter nil :keymap ethersync-mode-map :interactive nil
@@ -1038,6 +1055,7 @@ Use `ethersync-managed-p' to determine if current buffer is managed.")
     (add-hook 'before-revert-hook #'ethersync--signal-close nil t)
     (add-hook 'after-revert-hook #'ethersync--after-revert-hook nil t)
     (add-hook 'change-major-mode-hook #'ethersync--managed-mode-off nil t)
+    (add-hook 'post-command-hook #'ethersync--track-cursor nil t)
     (cl-pushnew (current-buffer) (ethersync--managed-buffers (ethersync-current-server))))
    (t
     (remove-hook 'kill-buffer-hook #'ethersync--managed-mode-off t)
@@ -1045,6 +1063,7 @@ Use `ethersync-managed-p' to determine if current buffer is managed.")
     (remove-hook 'before-revert-hook #'ethersync--signal-close t)
     (remove-hook 'after-revert-hook #'ethersync--after-revert-hook t)
     (remove-hook 'change-major-mode-hook #'ethersync--managed-mode-off t)
+    (remove-hook 'post-command-hook #'ethersync--track-cursor t)
     (cl-loop for (var . saved-binding) in ethersync--saved-bindings
              do (set (make-local-variable var) saved-binding))
     (run-hooks 'ethersync-managed-mode-hook)
