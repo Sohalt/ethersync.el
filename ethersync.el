@@ -1489,7 +1489,7 @@ Sets `ethersync--TextDocumentIdentifier-uri' (which see) as a side effect."
         (cl-destructuring-bind (beg end len text) (last ethersync--recent-changes)
           (list :range `(:start ,beg :end ,end)
                 :replacement text))))
-      ;;(setq ethersync--recent-changes nil)
+      (setq ethersync--recent-changes nil)
       (jsonrpc--call-deferred server))))
 
 (defun ethersync--signal-open ()
