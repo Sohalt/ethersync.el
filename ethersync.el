@@ -1486,7 +1486,7 @@ Sets `ethersync--TextDocumentIdentifier-uri' (which see) as a side effect."
         :uri (ethersync--TextDocumentIdentifier)
         :delta
         ;;FIXME handle multiple changes
-        (cl-destructuring-bind (beg end len text) (last ethersync--recent-changes)
+        (cl-destructuring-bind (beg end len text) (car ethersync--recent-changes)
           (list :range `(:start ,beg :end ,end)
                 :replacement text))))
       (setq ethersync--recent-changes nil)
