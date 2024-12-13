@@ -1246,8 +1246,8 @@ Uses THING, FACE, DEFS and PREPEND."
 If SILENT, don't echo progress in mode-line."
   (unless edits (cl-return-from ethersync--apply-text-edits))
   (unless (or (not version) (equal version ethersync--versioned-identifier))
-    (jsonrpc-error "Edits on `%s' require version %d, you have %d"
-                   (current-buffer) version ethersync--versioned-identifier))
+    (ethersync--message "Edits on `%s' require version %d, you have %d"
+                        (current-buffer) version ethersync--versioned-identifier))
   (atomic-change-group
     (let* ((change-group (prepare-change-group))
            (howmany (length edits))
@@ -1370,7 +1370,7 @@ highlights the entire width of the window."
     (overlay-put overlay 'type 'additional-region)
     overlay))
 
-(defun draw-cursors (username ranges)
+(defun ethersync-draw-cursors (username ranges)
   "Highlight multiple RANGES in the current buffer.
 Each range should be of the form:
   '(:start (:character START-CHAR :line START-LINE)
@@ -1380,21 +1380,8 @@ Each range should be of the form:
     (let* ((range (map-elt ranges i))
            (start (map-elt range :start))
            (end (map-elt range :end))
-           (start-line (map-elt start :line))
-           (start-char (map-elt start :character))
-           (end-line (map-elt end :line))
-           (end-char (map-elt end :character))
-           ;; Convert line/character to buffer positions
-           (start-pos (save-excursion
-                        (goto-char (point-min))
-                        (forward-line (1- start-line))
-                        (forward-char start-char)
-                        (point)))
-           (end-pos (save-excursion
-                      (goto-char (point-min))
-                      (forward-line (1- end-line))
-                      (forward-char end-char)
-                      (point))))
+           (start-pos (ethersync--lsp-position-to-point start))
+           (end-pos (ethersync--lsp-position-to-point end)))
       ;; Create the overlay and set its face
       (let* ((overlay (make-overlay start-pos end-pos)))
         (overlay-put overlay 'ethersync-cursor t)
@@ -1407,7 +1394,7 @@ Each range should be of the form:
          (buffer (map-elt (ethersync--path-to-buffer server) (ethersync-uri-to-path uri))))
     (with-current-buffer buffer
       (remove-overlays (point-min) (point-max) 'ethersync-cursor t)
-      (draw-cursors name ranges)))
+      (ethersync-draw-cursors name ranges)))
   (ethersync--message "Received cursor (userid=%s, uri=%s, name=%s, ranges=%s)"
                       userid uri name ranges))
 
