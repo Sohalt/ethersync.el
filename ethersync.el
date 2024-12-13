@@ -420,7 +420,8 @@ treated as in `ethersync--dbind'."
     :accessor ethersync--managed-buffers)
    (path-to-buffer
     :documentation "Map (path -> buffer)."
-    :initform (make-hash-table :test #'equal) :accessor ethersync--path-to-buffer)
+    :initform (make-hash-table :test #'equal)
+    :accessor ethersync--path-to-buffer)
    (saved-initargs
     :documentation "Saved initargs for reconnection purposes."
     :accessor ethersync--saved-initargs))
@@ -745,7 +746,7 @@ This docstring appeases checkdoc, that's all."
     ;; Now start the handshake.  To honor `ethersync-sync-connect'
     ;; maybe-sync-maybe-async semantics we use `jsonrpc-async-request'
     ;; and mimic most of `jsonrpc-request'.
-    (map-put ethersync--server-by-project project server)
+    (map-put! ethersync--server-by-project project server)
     (dolist (buffer (buffer-list))
       (with-current-buffer buffer
         ;; No need to pass SERVER as an argument: it has
@@ -1095,7 +1096,7 @@ If it is activated, also signal 'open'."
         (setq ethersync--diagnostics nil)
         (ethersync--managed-mode)
         (ethersync--signal-open)
-        (map-put (ethersync--path-to-buffer server) buffer-file-name (current-buffer))
+        (map-put! (ethersync--path-to-buffer server) buffer-file-name (current-buffer))
         ;; Run user hook after 'open' so server knows
         ;; about the buffer.
         (run-hooks 'ethersync-managed-mode-hook)))))
@@ -1221,18 +1222,48 @@ Uses THING, FACE, DEFS and PREPEND."
         (delete-region start-pos (point))
         (insert replacement)))))
 
+(cl-defun ethersync--apply-text-edits (edits &optional version silent)
+  "Apply EDITS for current buffer if at VERSION, or if it's nil.
+If SILENT, don't echo progress in mode-line."
+  (unless edits (cl-return-from ethersync--apply-text-edits))
+  (unless (or (not version) (equal version ethersync--versioned-identifier))
+    (jsonrpc-error "Edits on `%s' require version %d, you have %d"
+                   (current-buffer) version ethersync--versioned-identifier))
+  (atomic-change-group
+    (let* ((change-group (prepare-change-group))
+           (howmany (length edits))
+           (reporter (unless silent
+                       (make-progress-reporter
+                        (format "[ethersync] applying %s edits to `%s'..."
+                                howmany (current-buffer))
+                        0 howmany)))
+           (done 0))
+      (mapc (pcase-lambda (`(,newText ,beg . ,end))
+              (let ((source (current-buffer)))
+                (with-temp-buffer
+                  (insert newText)
+                  (let ((temp (current-buffer)))
+                    (with-current-buffer source
+                      (save-excursion
+                        (save-restriction
+                          (narrow-to-region beg end)
+                          (replace-buffer-contents temp)))
+                      (when reporter
+                        (ethersync--reporter-update reporter (cl-incf done))))))))
+            (mapcar (ethersync--lambda ((Delta) range replacement)
+                      (cons replacement (ethersync-range-region range 'markers)))
+                    (reverse edits)))
+      (undo-amalgamate-change-group change-group)
+      (when reporter
+        (progress-reporter-done reporter)))))
+
 (cl-defmethod ethersync-handle-notification
   (_server (_method (eql edit)) &key uri delta revision)
   "Handle notification edit."
-  (cl-loop
-   for delta-spec across delta
-   collect
-   (ethersync--dbind ((Delta) range replacement) delta-spec
-     (ethersync--message "Received edit (uri=%s, range=%s replacement=%s)"
-                         uri range replacement)
-     (let* ((server (ethersync--current-server-or-lose))
-            (buffer (map-elt (ethersync--path-to-buffer server) (ethersync-uri-to-path uri))))
-       (with-current-buffer buffer (ethersync-replace-range range replacement))))))
+  (let* ((server (ethersync--current-server-or-lose))
+         (buffer (map-elt (ethersync--path-to-buffer server) (ethersync-uri-to-path uri))))
+    (with-current-buffer buffer
+      (ethersync--apply-text-edits delta revision))))
 
 (cl-defmethod ethersync-handle-notification
   (_server method &key &allow-other-keys)
@@ -1403,7 +1434,6 @@ expensive cached value of `file-truename'.")
     (add-hook hook fname append local)))
 
 (defun ethersync--track-changes-signal (id &optional distance)
-  (message "estcs")
   (cond
    (distance
     ;; When distance is <100, we may as well coalesce the changes.
@@ -1443,6 +1473,9 @@ Sets `ethersync--TextDocumentIdentifier-uri' (which see) as a side effect."
             `(,truename . ,(ethersync-path-to-uri truename :truenamep t)))))
   (cdr ethersync--TextDocumentIdentifier-cache))
 
+(cl-destructuring-bind (beg end len text) (car ethersync--recent-changes)
+  (list :range `(:start ,beg :end ,end)
+        :replacement text))
 (defun ethersync--signal-edit ()
   "Send edit to server."
   (ethersync--track-changes-fetch ethersync--track-changes)
@@ -1455,10 +1488,11 @@ Sets `ethersync--TextDocumentIdentifier-uri' (which see) as a side effect."
        (list
         :uri (ethersync--TextDocumentIdentifier)
         :delta
-        (cl-loop for (beg end len text) in (reverse ethersync--recent-changes)
-                 vconcat `[,(list :range `(:start ,beg :end ,end)
-                                  :rangeLength len :text text)])))
-      (setq ethersync--recent-changes nil)
+        ;;FIXME handle multiple changes
+        (cl-destructuring-bind (beg end len text) (last ethersync--recent-changes)
+          (list :range `(:start ,beg :end ,end)
+                :replacement text))))
+      ;;(setq ethersync--recent-changes nil)
       (jsonrpc--call-deferred server))))
 
 (defun ethersync--signal-open ()
