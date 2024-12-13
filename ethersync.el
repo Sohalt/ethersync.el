@@ -745,7 +745,7 @@ This docstring appeases checkdoc, that's all."
     ;; Now start the handshake.  To honor `ethersync-sync-connect'
     ;; maybe-sync-maybe-async semantics we use `jsonrpc-async-request'
     ;; and mimic most of `jsonrpc-request'.
-    (puthash project server ethersync--server-by-project)
+    (map-put ethersync--server-by-project project server)
     (dolist (buffer (buffer-list))
       (with-current-buffer buffer
         ;; No need to pass SERVER as an argument: it has
@@ -1068,8 +1068,7 @@ Use `ethersync-managed-p' to determine if current buffer is managed.")
   "Return logical Ethersync server for current buffer, nil if none."
   (setq ethersync--cached-server
         (or ethersync--cached-server
-            (gethash (ethersync--current-project)
-                     ethersync--server-by-project))))
+            (map-elt ethersync--server-by-project (ethersync--current-project)))))
 
 (defun ethersync--current-server-or-lose ()
   "Return current logical Ethersync server connection or error."
@@ -1096,7 +1095,7 @@ If it is activated, also signal 'open'."
         (setq ethersync--diagnostics nil)
         (ethersync--managed-mode)
         (ethersync--signal-open)
-        (puthash buffer-file-name (current-buffer) (ethersync--path-to-buffer server))
+        (map-put (ethersync--path-to-buffer server) buffer-file-name (current-buffer))
         ;; Run user hook after 'open' so server knows
         ;; about the buffer.
         (run-hooks 'ethersync-managed-mode-hook)))))
@@ -1232,7 +1231,7 @@ Uses THING, FACE, DEFS and PREPEND."
      (ethersync--message "Received edit (uri=%s, range=%s replacement=%s)"
                          uri range replacement)
      (let* ((server (ethersync--current-server-or-lose))
-            (buffer (gethash (ethersync-uri-to-path uri) (ethersync--path-to-buffer server))))
+            (buffer (map-elt (ethersync--path-to-buffer server) (ethersync-uri-to-path uri))))
        (with-current-buffer buffer (ethersync-replace-range range replacement))))))
 
 (cl-defmethod ethersync-handle-notification
@@ -1355,7 +1354,7 @@ Each range should be of the form:
   (_server (_method (eql cursor)) &key userid uri ranges name)
   "Handle notification cursor."
   (let* ((server (ethersync--current-server-or-lose))
-         (buffer (gethash (ethersync-uri-to-path uri) (ethersync--path-to-buffer server))))
+         (buffer (map-elt (ethersync--path-to-buffer server) (ethersync-uri-to-path uri))))
     (with-current-buffer buffer (highlight-ranges ranges)))
   (ethersync--message "Received cursor (userid=%s, uri=%s, name=%s, ranges=%s)"
                       userid uri name ranges))
