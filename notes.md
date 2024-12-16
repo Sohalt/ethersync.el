@@ -30,3 +30,17 @@ send edit
 ```
 ethersync--post-self-insert-hook
 ```
+
+### Incompat with LSP
+
+why not send multiple edits?
+
+why not use lsp types?
+
+```
+      (Position (:line :character))
+      (Range (:start :end))
+      (TextDocumentEdit (:textDocument :edits) ())
+      (TextEdit (:range :newText))
+      (VersionedTextDocumentIdentifier (:uri :version) ())
+```
