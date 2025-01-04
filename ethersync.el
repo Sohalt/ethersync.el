@@ -1027,7 +1027,7 @@ Use `ethersync-managed-p' to determine if current buffer is managed.")
   (unless (equal (point) ethersync-last-post-command-position)
     (let* ((server (ethersync--current-server-or-lose))
            (lsp-pos (ethersync--pos-to-lsp-position (point))))
-      (message "move to %s" lsp-pos)
+      ;; (message "move to %s" lsp-pos)
       (jsonrpc-notify
        ;; server
        (ethersync--current-server-or-lose)
@@ -1268,7 +1268,7 @@ If SILENT, don't echo progress in mode-line."
                           (narrow-to-region beg end)
                           (replace-buffer-contents temp)))
                       (when reporter
-                        (ethersync--reporter-update reporter (cl-incf done))))))))
+                        (progress-reporter-update reporter (cl-incf done))))))))
             (mapcar (ethersync--lambda ((Delta) range replacement)
                       (cons replacement (ethersync-range-region range 'markers)))
                     (reverse edits)))
@@ -1422,7 +1422,7 @@ expensive cached value of `file-truename'.")
   (if (eq ethersync--recent-changes :pending) (setq ethersync--recent-changes nil))
   (track-changes-fetch
    id (lambda (beg end before)
-        (cl-incf ethersync--versioned-identifier)
+        ;;(cl-incf ethersync--versioned-identifier)
         (cond
          ((eq ethersync--recent-changes :emacs-messup) nil)
          ((eq before 'error) (setf ethersync--recent-changes :emacs-messup))
