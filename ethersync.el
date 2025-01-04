@@ -1248,33 +1248,37 @@ If SILENT, don't echo progress in mode-line."
   (unless (or (not version) (equal version ethersync--versioned-identifier))
     (ethersync--message "Edits on `%s' require version %d, you have %d"
                         (current-buffer) version ethersync--versioned-identifier))
-  (atomic-change-group
-    (let* ((change-group (prepare-change-group))
-           (howmany (length edits))
-           (reporter (unless silent
-                       (make-progress-reporter
-                        (format "[ethersync] applying %s edits to `%s'..."
-                                howmany (current-buffer))
-                        0 howmany)))
-           (done 0))
-      (mapc (pcase-lambda (`(,newText ,beg . ,end))
-              (let ((source (current-buffer)))
-                (with-temp-buffer
-                  (insert newText)
-                  (let ((temp (current-buffer)))
-                    (with-current-buffer source
-                      (save-excursion
-                        (save-restriction
-                          (narrow-to-region beg end)
-                          (replace-buffer-contents temp)))
-                      (when reporter
-                        (progress-reporter-update reporter (cl-incf done))))))))
-            (mapcar (ethersync--lambda ((Delta) range replacement)
-                      (cons replacement (ethersync-range-region range 'markers)))
-                    (reverse edits)))
-      (undo-amalgamate-change-group change-group)
-      (when reporter
-        (progress-reporter-done reporter)))))
+  (condition-case err
+      (progn
+        (setq ethersync-daemon-edit t)
+        (atomic-change-group
+          (let* ((change-group (prepare-change-group))
+                 (howmany (length edits))
+                 (reporter (unless silent
+                             (make-progress-reporter
+                              (format "[ethersync] applying %s edits to `%s'..."
+                                      howmany (current-buffer))
+                              0 howmany)))
+                 (done 0))
+            (mapc (pcase-lambda (`(,newText ,beg . ,end))
+                    (let ((source (current-buffer)))
+                      (with-temp-buffer
+                        (insert newText)
+                        (let ((temp (current-buffer)))
+                          (with-current-buffer source
+                            (save-excursion
+                              (save-restriction
+                                (narrow-to-region beg end)
+                                (replace-buffer-contents temp)))
+                            (when reporter
+                              (progress-reporter-update reporter (cl-incf done))))))))
+                  (mapcar (ethersync--lambda ((Delta) range replacement)
+                                             (cons replacement (ethersync-range-region range 'markers)))
+                          (reverse edits)))
+            (undo-amalgamate-change-group change-group)
+            (when reporter
+              (progress-reporter-done reporter)))))
+    (finally (setq ethersync-daemon-edit nil))))
 
 (cl-defmethod ethersync-handle-notification
   (_server (_method (eql edit)) &key uri delta revision)
@@ -1417,6 +1421,8 @@ expensive cached value of `file-truename'.")
 
 (defvar ethersync--document-changed-hook '(ethersync--signal-edit)
   "Internal hook for doing things when the document changes.")
+
+(defvar-local ethersync-daemon-edit nil)
 
 (defun ethersync--track-changes-fetch (id)
   (if (eq ethersync--recent-changes :pending) (setq ethersync--recent-changes nil))
