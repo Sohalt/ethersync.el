@@ -111,10 +111,6 @@ as 0, i.e. don't block at all."
   "If non-nil, shut down server after killing last managed buffer."
   :type 'boolean)
 
-(defcustom ethersync-send-changes-idle-time 0.5
-  "Don't tell server of changes before Emacs's been idle for this many seconds."
-  :type 'number)
-
 (defcustom ethersync-events-buffer-config
   (list :size (or (bound-and-true-p ethersync-events-buffer-size) 2000000)
         :format 'full)
@@ -1048,7 +1044,7 @@ Use `ethersync-managed-p' to determine if current buffer is managed.")
     (unless ethersync--track-changes
       (setq ethersync--track-changes
             (track-changes-register
-             #'ethersync--track-changes-signal :disjoint t)))
+             #'ethersync--on-changes :disjoint t)))
     (add-hook 'kill-buffer-hook #'ethersync--managed-mode-off nil t)
     ;; Prepend "didClose" to the hook after the "nonoff", so it will run first
     (add-hook 'kill-buffer-hook #'ethersync--signal-close nil t)
@@ -1250,7 +1246,7 @@ If SILENT, don't echo progress in mode-line."
                         (current-buffer) version ethersync--versioned-identifier))
   (condition-case err
       (progn
-        (setq ethersync-daemon-edit t)
+        (setq ethersync--daemon-edit t)
         (atomic-change-group
           (let* ((change-group (prepare-change-group))
                  (howmany (length edits))
@@ -1273,12 +1269,14 @@ If SILENT, don't echo progress in mode-line."
                             (when reporter
                               (progress-reporter-update reporter (cl-incf done))))))))
                   (mapcar (ethersync--lambda ((Delta) range replacement)
-                                             (cons replacement (ethersync-range-region range 'markers)))
+                            (cons replacement (ethersync-range-region range 'markers)))
                           (reverse edits)))
             (undo-amalgamate-change-group change-group)
             (when reporter
               (progress-reporter-done reporter)))))
-    (finally (setq ethersync-daemon-edit nil))))
+    ;;catch errors to make sure we always reset ethersync--daemon-edit
+    (error nil))
+  (setq ethersync--daemon-edit nil))
 
 (cl-defmethod ethersync-handle-notification
   (_server (_method (eql edit)) &key uri delta revision)
@@ -1410,9 +1408,6 @@ expensive cached value of `file-truename'.")
 
 (defvar-local ethersync--versioned-identifier 0)
 
-(defvar-local ethersync--recent-changes nil
-  "Recent buffer changes as collected by `ethersync--track-changes-fetch'.")
-
 (cl-defmethod jsonrpc-connection-ready-p ((_server ethersync-server) _what)
   "Tell if SERVER is ready for WHAT in current buffer."
   (and (cl-call-next-method) (not ethersync--recent-changes)))
@@ -1422,21 +1417,28 @@ expensive cached value of `file-truename'.")
 (defvar ethersync--document-changed-hook '(ethersync--signal-edit)
   "Internal hook for doing things when the document changes.")
 
-(defvar-local ethersync-daemon-edit nil)
+(defvar-local ethersync--daemon-edit nil)
 
 (defun ethersync--track-changes-fetch (id)
-  (if (eq ethersync--recent-changes :pending) (setq ethersync--recent-changes nil))
   (track-changes-fetch
    id (lambda (beg end before)
-        ;;(cl-incf ethersync--versioned-identifier)
+        (cl-incf ethersync--versioned-identifier)
+        (message "tcf: %s" ethersync--daemon-edit)
         (cond
          ((eq ethersync--recent-changes :emacs-messup) nil)
          ((eq before 'error) (setf ethersync--recent-changes :emacs-messup))
-         (t (push `(,(ethersync--pos-to-lsp-position beg)
-                    ,(ethersync--virtual-pos-to-lsp-position beg before)
-                    ,(length before)
-                    ,(buffer-substring-no-properties beg end))
-                  ethersync--recent-changes))))))
+         ((not ethersync--daemon-edit)
+          (let ((begin (ethersync--pos-to-lsp-position beg))
+                (end (ethersync--virtual-pos-to-lsp-position beg before))
+                (replacement (buffer-substring-no-properties beg end)))
+            (jsonrpc-notify
+             ;; server
+             (ethersync--current-server-or-lose)
+             :edit
+             `(:uri ,(ethersync--TextDocumentIdentifier)
+               :revision ,ethersync--versioned-identifier
+               :delta [(:range (:start ,begin :end ,end)
+                        :replacement ,replacement)]))))))))
 
 (defun ethersync--add-one-shot-hook (hook function &optional append local)
   "Like `add-hook' but calls FUNCTION only once."
@@ -1447,33 +1449,20 @@ expensive cached value of `file-truename'.")
     (fset fname fun)
     (add-hook hook fname append local)))
 
-(defun ethersync--track-changes-signal (id &optional distance)
-  (cond
-   (distance
-    ;; When distance is <100, we may as well coalesce the changes.
-    (when (> distance 100) (ethersync--track-changes-fetch id)))
-   (ethersync--recent-changes nil)
-   ;; Note that there are pending changes, for the benefit of those
-   ;; who check it as a boolean.
-   (t (setq ethersync--recent-changes :pending)))
-  (when ethersync--change-idle-timer (cancel-timer ethersync--change-idle-timer))
-  (setq ethersync--change-idle-timer
-        (run-with-idle-timer
-         ethersync-send-changes-idle-time nil
-         (lambda (buf)
-           (ethersync--when-live-buffer buf
-             (when ethersync--managed-mode
-               (if (track-changes-inconsistent-state-p)
-                   ;; Not a good time (e.g. in the middle of Quail thingy,
-                   ;; bug#70541): reschedule for the next idle period.
-                   (ethersync--add-one-shot-hook
-                    'post-command-hook
-                    (lambda ()
-                      (ethersync--when-live-buffer buf
-                        (ethersync--track-changes-signal id))))
-                 (run-hooks 'ethersync--document-changed-hook)
-                 (setq ethersync--change-idle-timer nil)))))
-         (current-buffer))))
+(defun ethersync--on-changes (id &optional distance)
+  (ethersync--track-changes-fetch id)
+  ;; (ethersync--when-live-buffer buf
+  ;;   (when ethersync--managed-mode
+  ;;     (if (track-changes-inconsistent-state-p)
+  ;;         ;; Not a good time (e.g. in the middle of Quail thingy,
+  ;;         ;; bug#70541): reschedule for the next idle period.
+  ;;         (ethersync--add-one-shot-hook
+  ;;          'post-command-hook
+  ;;          (lambda ()
+  ;;            (ethersync--when-live-buffer buf
+  ;;              (ethersync--on-changes id))))
+  ;;       (run-hooks 'ethersync--document-changed-hook))))
+  )
 
 (defun ethersync--TextDocumentIdentifier ()
   "Compute TextDocumentIdentifier object for current buffer.
@@ -1490,22 +1479,7 @@ Sets `ethersync--TextDocumentIdentifier-uri' (which see) as a side effect."
 (defun ethersync--signal-edit ()
   "Send edit to server."
   (ethersync--track-changes-fetch ethersync--track-changes)
-  (when ethersync--recent-changes
-    (ethersync--TextDocumentIdentifier)
-    (let* ((server (ethersync--current-server-or-lose)))
-      (jsonrpc-notify
-       server
-       :edit
-       (list
-        :uri (ethersync--TextDocumentIdentifier)
-        :revision ethersync--versioned-identifier
-        :delta
-        ;;FIXME handle multiple changes
-        (cl-destructuring-bind (beg end len text) (car ethersync--recent-changes)
-          (list :range `(:start ,beg :end ,end)
-                :replacement text))))
-      (setq ethersync--recent-changes nil)
-      (jsonrpc--call-deferred server))))
+  (jsonrpc--call-deferred server))
 
 (defun ethersync--signal-open ()
   "Send open to server."

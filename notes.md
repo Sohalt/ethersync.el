@@ -44,3 +44,7 @@ why not use lsp types?
       (TextEdit (:range :newText))
       (VersionedTextDocumentIdentifier (:uri :version) ())
 ```
+
+####
+
+gptel
